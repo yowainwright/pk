@@ -32,3 +32,8 @@ go.work.sum
 # .vscode/
 tmp/
 CLAUDE.md
+
+# Built binary
+pk
+bin/
+dist/

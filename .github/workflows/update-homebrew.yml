@@ -1,0 +1,94 @@
+name: Update Homebrew Formula
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update-formula:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout homebrew-tap repo
+        uses: actions/checkout@v4
+        with:
+          repository: yowainwright/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Get release info
+        id: release
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+
+      - name: Download release assets and calculate SHA256
+        id: checksums
+        run: |
+          VERSION="${{ steps.release.outputs.tag }}"
+          REPO="jeffrywainwright/pk"
+
+          curl -L -o pk-darwin-arm64 "https://github.com/$REPO/releases/download/$VERSION/pk-darwin-arm64"
+          SHA_DARWIN_ARM64=$(sha256sum pk-darwin-arm64 | cut -d' ' -f1)
+
+          curl -L -o pk-darwin-amd64 "https://github.com/$REPO/releases/download/$VERSION/pk-darwin-amd64"
+          SHA_DARWIN_AMD64=$(sha256sum pk-darwin-amd64 | cut -d' ' -f1)
+
+          curl -L -o pk-linux-arm64 "https://github.com/$REPO/releases/download/$VERSION/pk-linux-arm64"
+          SHA_LINUX_ARM64=$(sha256sum pk-linux-arm64 | cut -d' ' -f1)
+
+          curl -L -o pk-linux-amd64 "https://github.com/$REPO/releases/download/$VERSION/pk-linux-amd64"
+          SHA_LINUX_AMD64=$(sha256sum pk-linux-amd64 | cut -d' ' -f1)
+
+          echo "sha_darwin_arm64=$SHA_DARWIN_ARM64" >> $GITHUB_OUTPUT
+          echo "sha_darwin_amd64=$SHA_DARWIN_AMD64" >> $GITHUB_OUTPUT
+          echo "sha_linux_arm64=$SHA_LINUX_ARM64" >> $GITHUB_OUTPUT
+          echo "sha_linux_amd64=$SHA_LINUX_AMD64" >> $GITHUB_OUTPUT
+
+      - name: Update formula
+        run: |
+          mkdir -p Formula
+          cat > Formula/pk.rb << 'FORMULA'
+          class Pk < Formula
+            desc "Process killer - automatically terminate runaway processes on macOS"
+            homepage "https://github.com/jeffrywainwright/pk"
+            version "${{ steps.release.outputs.version }}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/jeffrywainwright/pk/releases/download/${{ steps.release.outputs.tag }}/pk-darwin-arm64"
+                sha256 "${{ steps.checksums.outputs.sha_darwin_arm64 }}"
+              else
+                url "https://github.com/jeffrywainwright/pk/releases/download/${{ steps.release.outputs.tag }}/pk-darwin-amd64"
+                sha256 "${{ steps.checksums.outputs.sha_darwin_amd64 }}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/jeffrywainwright/pk/releases/download/${{ steps.release.outputs.tag }}/pk-linux-arm64"
+                sha256 "${{ steps.checksums.outputs.sha_linux_arm64 }}"
+              else
+                url "https://github.com/jeffrywainwright/pk/releases/download/${{ steps.release.outputs.tag }}/pk-linux-amd64"
+                sha256 "${{ steps.checksums.outputs.sha_linux_amd64 }}"
+              end
+            end
+
+            def install
+              bin.install Dir["pk-*"].first => "pk"
+            end
+
+            test do
+              assert_match "pk", shell_output("#{bin}/pk --version")
+            end
+          end
+          FORMULA
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/pk.rb
+          git commit -m "Update pk to ${{ steps.release.outputs.version }}" || exit 0
+          git push
