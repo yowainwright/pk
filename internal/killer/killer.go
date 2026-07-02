@@ -28,11 +28,8 @@ func (k *SignalKiller) Kill(ctx context.Context, pid int32) error {
 		return fmt.Errorf("finding process %d: %w", pid, err)
 	}
 
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
-		if err == os.ErrProcessDone {
-			return nil
-		}
-		return fmt.Errorf("sending SIGTERM to %d: %w", pid, err)
+	if err := signalProcess(proc, pid, syscall.SIGTERM); err != nil {
+		return err
 	}
 
 	terminated := k.waitForExit(ctx, pid, k.termTimeout)
@@ -40,14 +37,7 @@ func (k *SignalKiller) Kill(ctx context.Context, pid int32) error {
 		return nil
 	}
 
-	if err := proc.Signal(syscall.SIGKILL); err != nil {
-		if err == os.ErrProcessDone {
-			return nil
-		}
-		return fmt.Errorf("sending SIGKILL to %d: %w", pid, err)
-	}
-
-	return nil
+	return signalProcess(proc, pid, syscall.SIGKILL)
 }
 
 func (k *SignalKiller) waitForExit(ctx context.Context, pid int32, timeout time.Duration) bool {
@@ -76,4 +66,15 @@ func processExists(pid int32) bool {
 	}
 	err = proc.Signal(syscall.Signal(0))
 	return err == nil
+}
+
+func signalProcess(proc *os.Process, pid int32, signal syscall.Signal) error {
+	err := proc.Signal(signal)
+	if err == nil {
+		return nil
+	}
+	if err == os.ErrProcessDone {
+		return nil
+	}
+	return fmt.Errorf("sending %s to %d: %w", signal, pid, err)
 }

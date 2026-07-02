@@ -34,8 +34,12 @@ tmp/
 CLAUDE.md
 
 # Built binary
-pk
+/pk
 bin/
 dist/
 .claude
 
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key

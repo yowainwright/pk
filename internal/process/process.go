@@ -7,6 +7,8 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 )
 
+const bytesPerMegabyte = 1024 * 1024
+
 type Process struct {
 	PID        int32
 	Name       string
@@ -48,17 +50,11 @@ func getProcessInfo(ctx context.Context, p *process.Process) (Process, error) {
 		return Process{}, err
 	}
 
-	cpu, err := p.CPUPercentWithContext(ctx)
-	if err != nil {
-		cpu = 0
-	}
-
-	memInfo, err := p.MemoryInfoWithContext(ctx)
+	cpu := cpuPercent(ctx, p)
+	memMB, err := memoryMB(ctx, p)
 	if err != nil {
 		return Process{}, err
 	}
-
-	memMB := memInfo.RSS / (1024 * 1024)
 
 	return Process{
 		PID:        p.Pid,
@@ -66,4 +62,21 @@ func getProcessInfo(ctx context.Context, p *process.Process) (Process, error) {
 		CPUPercent: cpu,
 		MemoryMB:   memMB,
 	}, nil
+}
+
+func cpuPercent(ctx context.Context, p *process.Process) float64 {
+	cpu, err := p.CPUPercentWithContext(ctx)
+	if err != nil {
+		return 0
+	}
+	return cpu
+}
+
+func memoryMB(ctx context.Context, p *process.Process) (uint64, error) {
+	memInfo, err := p.MemoryInfoWithContext(ctx)
+	if err != nil {
+		return 0, err
+	}
+	rssMB := memInfo.RSS / bytesPerMegabyte
+	return rssMB, nil
 }
