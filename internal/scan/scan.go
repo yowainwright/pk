@@ -89,9 +89,24 @@ func reportForProcess(
 
 	confidence := confidenceForReasons(reasons)
 	action := actionForConfidence(confidence)
-	descendants := processtree.Descendants(procs, proc.PID)
+	descendants := reportDescendants(cfg, proc, procs)
 	report := newReport(proc, descendants, action, confidence, reasons)
 	return report, true
+}
+
+func reportDescendants(
+	cfg *config.Config,
+	proc process.Process,
+	procs []process.Process,
+) []process.Process {
+	descendants := processtree.Descendants(procs, proc.PID)
+	filtered := make([]process.Process, 0, len(descendants))
+	for _, descendant := range descendants {
+		if !cfg.IsProtected(descendant.Name) {
+			filtered = append(filtered, descendant)
+		}
+	}
+	return filtered
 }
 
 func newReport(
@@ -299,21 +314,43 @@ func hasAncestor(
 	procs []process.Process,
 	matches func(process.Process) bool,
 ) bool {
-	byPID := processesByPID(procs)
-	seen := map[int32]bool{proc.PID: true}
-	parentPID := proc.ParentPID
+	walker := ancestorWalker{
+		byPID: processesByPID(procs),
+		seen:  map[int32]bool{proc.PID: true},
+	}
+	return walker.hasMatch(proc.ParentPID, matches)
+}
+
+type ancestorWalker struct {
+	byPID map[int32]process.Process
+	seen  map[int32]bool
+}
+
+func (w *ancestorWalker) hasMatch(
+	parentPID int32,
+	matches func(process.Process) bool,
+) bool {
 	for parentPID != 0 {
-		ancestor, ok := byPID[parentPID]
-		if !ok || seen[parentPID] {
+		ancestor, ok := w.next(parentPID)
+		if !ok {
 			return false
 		}
 		if matches(ancestor) {
 			return true
 		}
-		seen[parentPID] = true
 		parentPID = ancestor.ParentPID
 	}
 	return false
+}
+
+func (w *ancestorWalker) next(pid int32) (process.Process, bool) {
+	ancestor, ok := w.byPID[pid]
+	shouldStop := !ok || w.seen[pid]
+	if shouldStop {
+		return process.Process{}, false
+	}
+	w.seen[pid] = true
+	return ancestor, true
 }
 
 func processesByPID(procs []process.Process) map[int32]process.Process {
@@ -325,38 +362,37 @@ func processesByPID(procs []process.Process) map[int32]process.Process {
 }
 
 func matchesAnyCommand(name string, command string, commands []string) bool {
-	name = strings.ToLower(name)
-	command = strings.ToLower(command)
-	tokens := commandTokens(name + " " + command)
+	candidates := executableCandidates(name, command)
 	for _, current := range commands {
-		if name == current {
-			return true
-		}
-		if matchesCommandToken(tokens, current) {
+		if candidates[current] {
 			return true
 		}
 	}
 	return false
 }
 
-func commandTokens(command string) []string {
-	split := func(r rune) bool {
-		isPathSeparator := r == '/'
-		isWhitespace := r == ' ' || r == '\t'
-		isNameSeparator := r == '-' || r == '_'
-		isSeparator := isPathSeparator || isWhitespace || isNameSeparator
-		return isSeparator
+func executableCandidates(name string, command string) map[string]bool {
+	candidates := make(map[string]bool, 2)
+	addExecutable(candidates, name)
+	fields := strings.Fields(command)
+	if len(fields) > 0 {
+		addExecutable(candidates, fields[0])
 	}
-	return strings.FieldsFunc(command, split)
+	return candidates
 }
 
-func matchesCommandToken(tokens []string, command string) bool {
-	for _, token := range tokens {
-		if token == command {
-			return true
-		}
+func addExecutable(candidates map[string]bool, value string) {
+	executable := executableName(value)
+	if executable == "" {
+		return
 	}
-	return false
+	candidates[executable] = true
+}
+
+func executableName(value string) string {
+	value = strings.Trim(value, `"'`)
+	value = strings.ToLower(value)
+	return filepath.Base(value)
 }
 
 func isDevPath(path string) bool {

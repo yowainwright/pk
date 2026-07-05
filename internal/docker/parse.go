@@ -55,7 +55,8 @@ func parseLabels(value string) map[string]string {
 	labels := make(map[string]string)
 	for _, part := range strings.Split(value, ",") {
 		key, labelValue, ok := strings.Cut(strings.TrimSpace(part), "=")
-		if ok && key != "" {
+		hasLabel := ok && key != ""
+		if hasLabel {
 			labels[key] = labelValue
 		}
 	}

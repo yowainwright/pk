@@ -46,11 +46,6 @@ type backgroundManager interface {
 	Status() (string, error)
 }
 
-type skillInstaller interface {
-	Install(string) (string, error)
-	DefaultRoot() (string, error)
-}
-
 type cleanupOptions struct {
 	apply bool
 	watch bool
@@ -64,7 +59,8 @@ var (
 	newDockerClient      = func() docker.Client { return docker.NewClient() }
 	newMonitorRunner     = func(cfg *config.Config) monitorRunner { return newMonitor(cfg) }
 	newBackgroundManager = func() (backgroundManager, error) { return service.DefaultManager() }
-	newSkillInstaller    = func() skillInstaller { return defaultSkillInstaller{} }
+	installSkill         = skillinstall.Install
+	defaultSkillRoot     = skillinstall.DefaultRoot
 	sendNotification     = notify.Send
 	handleShutdownSignal = handleSignals
 	notifySignal         = signal.Notify
@@ -93,15 +89,30 @@ func run(args []string, out io.Writer) error {
 }
 
 func dispatch(command string, args []string, out io.Writer) error {
+	handled, err := dispatchPrimary(command, args, out)
+	if handled {
+		return err
+	}
+	return dispatchUtility(command, args, out)
+}
+
+func dispatchPrimary(command string, args []string, out io.Writer) (bool, error) {
 	switch command {
 	case "", "monitor":
-		return runMonitor(args)
+		return true, runMonitor(args)
 	case "scan":
-		return runScan(args, out)
+		return true, runScan(args, out)
 	case "cleanup":
-		return runCleanup(args, out)
+		return true, runCleanup(args, out)
 	case "history":
-		return runHistory(out)
+		return true, runHistory(out)
+	default:
+		return false, nil
+	}
+}
+
+func dispatchUtility(command string, args []string, out io.Writer) error {
+	switch command {
 	case "install":
 		return runInstall(out)
 	case "uninstall":
@@ -161,15 +172,7 @@ func runCleanupOnce(
 	options cleanupOptions,
 	out io.Writer,
 ) error {
-	reports, err := scanReports(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	log, err := newAuditStore()
-	if err != nil {
-		return err
-	}
-	results, err := cleanup.Run(ctx, reports, newProcessKiller(), log, options.apply)
+	log, results, err := runProcessCleanup(ctx, cfg, options)
 	if err != nil {
 		return err
 	}
@@ -178,6 +181,26 @@ func runCleanupOnce(
 		return err
 	}
 	return writeCleanupResults(out, results, containerResults)
+}
+
+func runProcessCleanup(
+	ctx context.Context,
+	cfg *config.Config,
+	options cleanupOptions,
+) (auditStore, []cleanup.Result, error) {
+	reports, err := scanReports(ctx, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	log, err := newAuditStore()
+	if err != nil {
+		return nil, nil, err
+	}
+	results, err := cleanup.Run(ctx, reports, newProcessKiller(), log, options.apply)
+	if err != nil {
+		return nil, nil, err
+	}
+	return log, results, nil
 }
 
 func runDockerCleanup(
@@ -189,7 +212,14 @@ func runDockerCleanup(
 	if !client.Available() {
 		return nil, nil
 	}
-	return docker.Run(ctx, client, log, apply)
+	results, err := docker.Run(ctx, client, log, apply)
+	if err != nil {
+		if docker.IsDaemonUnavailable(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return results, nil
 }
 
 func writeCleanupResults(
@@ -197,7 +227,10 @@ func writeCleanupResults(
 	results []cleanup.Result,
 	containerResults []docker.Result,
 ) error {
-	if len(results) == 0 && len(containerResults) == 0 {
+	noResults := len(results) == 0
+	noContainerResults := len(containerResults) == 0
+	noCleanupResults := noResults && noContainerResults
+	if noCleanupResults {
 		return cleanup.WriteResults(out, results)
 	}
 	if err := writeProcessCleanupResults(out, results); err != nil {
@@ -316,7 +349,7 @@ func runSkillsInstall(args []string, out io.Writer) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	path, err := newSkillInstaller().Install(root)
+	path, err := installSkill(root)
 	if err != nil {
 		return err
 	}
@@ -325,7 +358,7 @@ func runSkillsInstall(args []string, out io.Writer) error {
 }
 
 func runSkillsPath(out io.Writer) error {
-	root, err := newSkillInstaller().DefaultRoot()
+	root, err := defaultSkillRoot()
 	if err != nil {
 		return err
 	}
@@ -422,14 +455,4 @@ func isVersionCommand(args []string) bool {
 	isVersionFlag := args[0] == "--version"
 	isVersionSubcommand := args[0] == "version"
 	return isVersionFlag || isVersionSubcommand
-}
-
-type defaultSkillInstaller struct{}
-
-func (i defaultSkillInstaller) Install(root string) (string, error) {
-	return skillinstall.Install(root)
-}
-
-func (i defaultSkillInstaller) DefaultRoot() (string, error) {
-	return skillinstall.DefaultRoot()
 }

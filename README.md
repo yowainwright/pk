@@ -36,6 +36,18 @@ Show cleanup audit events:
 pk history
 ```
 
+Install the bundled agent skill:
+
+```sh
+pk skills install
+```
+
+Print where the skill will be installed:
+
+```sh
+pk skills path
+```
+
 Install background cleanup for the current user:
 
 ```sh
@@ -60,8 +72,11 @@ terminate matching processes.
 
 Background cleanup uses `launchd` on macOS and `systemd --user` on Linux. It
 runs `pk cleanup --apply --watch` with no external dependencies. Cleanup kills
-target process trees child-first and writes bounded JSONL audit events. Set
-`PK_AUDIT_PATH` to override the default audit file location.
+target process trees child-first, infers agent/session-owned restartable
+processes, stops matching local Docker Compose/devcontainer containers when
+Docker is available, and writes bounded JSONL audit events. Set `PK_AUDIT_PATH`
+to override the default audit file location. `pk skills install` writes the
+bundled skill to `$PK_SKILLS_DIR`, `$CODEX_HOME/skills`, or `~/.codex/skills`.
 
 ## Development
 

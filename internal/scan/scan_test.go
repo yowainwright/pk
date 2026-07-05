@@ -84,6 +84,19 @@ func TestReportsAvoidsBroadCommandSubstrings(t *testing.T) {
 	}
 }
 
+func TestReportsMatchesOnlyRestartableExecutable(t *testing.T) {
+	cfg := testConfig(t, "-cpu", "80")
+	proc := newProcess(42, "postgres")
+	proc.CommandLine = "postgres -D /Users/me/code/data"
+	proc.Cwd = "/Users/me/code/app"
+
+	reports := Reports(cfg, processes(proc))
+
+	if len(reports) != 0 {
+		t.Fatalf("expected no reports, got %d", len(reports))
+	}
+}
+
 func TestReportsSkipsRestartableCommandsOutsideDevCwd(t *testing.T) {
 	cfg := testConfig(t, "-cpu", "80")
 	proc := newProcess(42, "node")
@@ -149,6 +162,21 @@ func TestReportsIncludesDescendants(t *testing.T) {
 	}
 	if report.Descendants[0].PID != 43 {
 		t.Fatalf("expected descendant pid 43, got %d", report.Descendants[0].PID)
+	}
+}
+
+func TestReportsFiltersProtectedDescendants(t *testing.T) {
+	cfg := testConfig(t, "-protected", "node")
+	parent := restartableDevProcess(42)
+	parent.Name = "npm"
+	parent.CommandLine = "npm run dev"
+	child := newProcess(43, "node")
+	child.ParentPID = 42
+
+	report := onlyReportFromProcesses(t, cfg, []process.Process{parent, child})
+
+	if len(report.Descendants) != 0 {
+		t.Fatalf("expected no descendants, got %d", len(report.Descendants))
 	}
 }
 

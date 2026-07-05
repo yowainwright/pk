@@ -53,6 +53,43 @@ func TestCheckKillsDescendantsBeforeParent(t *testing.T) {
 	assertKilled(t, killer, 43, 42)
 }
 
+func TestCheckSkipsProtectedDescendants(t *testing.T) {
+	cfg := applyConfig()
+	cfg.GracePeriod = 0
+	cfg.Protected = []string{"node"}
+	killer := &fakeKiller{}
+	monitor := testMonitorWithKiller(cfg, killer)
+	parent := overCPUProcess()
+	parent.Name = "npm"
+	child := normalProcess()
+	child.PID = 43
+	child.ParentPID = 42
+	monitor.lister = &fakeLister{procs: []process.Process{parent, child}}
+
+	monitor.check(context.Background())
+	monitor.check(context.Background())
+
+	assertKilled(t, killer, 42)
+}
+
+func TestCheckStillKillsParentWhenChildKillFails(t *testing.T) {
+	cfg := applyConfig()
+	cfg.GracePeriod = 0
+	err := errors.New("process exited")
+	killer := &fakeKiller{errors: map[int32]error{43: err}}
+	monitor := testMonitorWithKiller(cfg, killer)
+	parent := overCPUProcess()
+	child := normalProcess()
+	child.PID = 43
+	child.ParentPID = 42
+	monitor.lister = &fakeLister{procs: []process.Process{parent, child}}
+
+	monitor.check(context.Background())
+	monitor.check(context.Background())
+
+	assertKilled(t, killer, 43, 42)
+}
+
 func TestRunStopsWhenContextIsCanceled(t *testing.T) {
 	monitor := testMonitor(applyConfig())
 	ctx, cancel := context.WithCancel(context.Background())
@@ -211,12 +248,18 @@ type fakeKiller struct {
 	pid    int32
 	pids   []int32
 	err    error
+	errors map[int32]error
 }
 
 func (k *fakeKiller) Kill(ctx context.Context, pid int32) error {
 	k.called = true
 	k.pid = pid
 	k.pids = append(k.pids, pid)
+	if k.errors != nil {
+		if err := k.errors[pid]; err != nil {
+			return err
+		}
+	}
 	return k.err
 }
 

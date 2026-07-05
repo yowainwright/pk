@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jeffrywainwright/pk/internal/audit"
 )
@@ -99,4 +100,21 @@ func Run(ctx context.Context, client Client, recorder Recorder, apply bool) ([]R
 		return nil, err
 	}
 	return runReports(ctx, Reports(containers), client, recorder, apply)
+}
+
+func IsDaemonUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	cannotConnect := strings.Contains(message, "cannot connect to the docker daemon")
+	daemonPrompt := strings.Contains(message, "is the docker daemon running")
+	daemonStopped := strings.Contains(message, "docker daemon is not running")
+	if cannotConnect {
+		return true
+	}
+	if daemonPrompt {
+		return true
+	}
+	return daemonStopped
 }

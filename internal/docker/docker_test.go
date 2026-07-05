@@ -21,6 +21,19 @@ func TestReportsTargetsComposeContainers(t *testing.T) {
 	assertReason(t, reports[0], "compose-container")
 }
 
+func TestReportsSortsByContainerID(t *testing.T) {
+	first := testContainer()
+	first.ID = "b"
+	second := testContainer()
+	second.ID = "a"
+
+	reports := Reports([]Container{first, second})
+
+	if reports[0].Container.ID != "a" {
+		t.Fatalf("expected sorted reports, got %#v", reports)
+	}
+}
+
 func TestReportsTargetsDevContainers(t *testing.T) {
 	container := testContainer()
 	container.Labels = map[string]string{"devcontainer.local_folder": "/Users/me/app"}
@@ -48,8 +61,9 @@ func TestReportsSkipsProtectedContainers(t *testing.T) {
 func TestRunStopsTargetsWhenApplied(t *testing.T) {
 	client := &fakeClient{available: true, containers: []Container{testContainer()}}
 	recorder := &fakeRecorder{}
+	apply := true
 
-	results, err := Run(context.Background(), client, recorder, true)
+	results, err := Run(context.Background(), client, recorder, apply)
 	if err != nil {
 		t.Fatalf("run docker cleanup: %v", err)
 	}
@@ -62,15 +76,115 @@ func TestRunStopsTargetsWhenApplied(t *testing.T) {
 	assertContainerEvent(t, recorder.events[0])
 }
 
+func TestRunDryRunRecordsWithoutStopping(t *testing.T) {
+	client := &fakeClient{available: true, containers: []Container{testContainer()}}
+	recorder := &fakeRecorder{}
+	apply := false
+
+	results, err := Run(context.Background(), client, recorder, apply)
+	if err != nil {
+		t.Fatalf("run docker cleanup: %v", err)
+	}
+	if client.stoppedID != "" {
+		t.Fatalf("expected no stopped container, got %q", client.stoppedID)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one result, got %d", len(results))
+	}
+}
+
+func TestRunReturnsListErrors(t *testing.T) {
+	client := &fakeClient{available: true, err: errors.New("denied")}
+	apply := true
+
+	_, err := Run(context.Background(), client, nil, apply)
+
+	if err == nil {
+		t.Fatal("expected list error")
+	}
+}
+
+func TestRunReturnsRecorderErrors(t *testing.T) {
+	client := &fakeClient{available: true, containers: []Container{testContainer()}}
+	recorder := &fakeRecorder{err: errors.New("disk full")}
+	apply := false
+
+	_, err := Run(context.Background(), client, recorder, apply)
+
+	if err == nil {
+		t.Fatal("expected recorder error")
+	}
+}
+
 func TestRunSkipsUnavailableDocker(t *testing.T) {
 	client := &fakeClient{}
+	apply := true
 
-	results, err := Run(context.Background(), client, nil, true)
+	results, err := Run(context.Background(), client, nil, apply)
 	if err != nil {
 		t.Fatalf("run docker cleanup: %v", err)
 	}
 	if len(results) != 0 {
 		t.Fatalf("expected no results, got %d", len(results))
+	}
+}
+
+func TestIsDaemonUnavailableMatchesDockerDaemonErrors(t *testing.T) {
+	message := "Cannot connect to the Docker daemon. Is the docker daemon running?"
+	err := errors.New(message)
+
+	if !IsDaemonUnavailable(err) {
+		t.Fatal("expected daemon unavailable error")
+	}
+}
+
+func TestIsDaemonUnavailableRejectsOtherErrors(t *testing.T) {
+	message := "permission denied"
+	err := errors.New(message)
+
+	if IsDaemonUnavailable(err) {
+		t.Fatal("expected non-daemon error")
+	}
+}
+
+func TestCLIClientChecksAvailability(t *testing.T) {
+	client := NewClientWithRunner(&fakeRunner{available: true})
+
+	if !client.Available() {
+		t.Fatal("expected docker available")
+	}
+}
+
+func TestCLIClientReportsUnavailableDocker(t *testing.T) {
+	client := NewClientWithRunner(&fakeRunner{})
+
+	if client.Available() {
+		t.Fatal("expected docker unavailable")
+	}
+}
+
+func TestExecRunnerRunsCommands(t *testing.T) {
+	runner := execRunner{}
+
+	if _, err := runner.LookPath("true"); err != nil {
+		t.Fatalf("look path: %v", err)
+	}
+	if _, err := runner.Output(context.Background(), "true"); err != nil {
+		t.Fatalf("output true: %v", err)
+	}
+	if err := runner.Run(context.Background(), "true"); err != nil {
+		t.Fatalf("run true: %v", err)
+	}
+}
+
+func TestCLIClientWrapsListErrors(t *testing.T) {
+	runner := &fakeRunner{available: true, err: errors.New("denied")}
+	client := NewClientWithRunner(runner)
+
+	_, err := client.List(context.Background())
+
+	if err == nil {
+		t.Fatal("expected list error")
 	}
 }
 
@@ -87,6 +201,14 @@ func TestCLIClientParsesDockerOutput(t *testing.T) {
 	}
 }
 
+func TestParseContainersReturnsJSONErrors(t *testing.T) {
+	_, err := parseContainers([]byte("not-json\n"))
+
+	if err == nil {
+		t.Fatal("expected parse error")
+	}
+}
+
 func TestCLIClientWrapsStopErrors(t *testing.T) {
 	runner := &fakeRunner{available: true, err: errors.New("denied")}
 	client := NewClientWithRunner(runner)
@@ -95,6 +217,17 @@ func TestCLIClientWrapsStopErrors(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected stop error")
+	}
+}
+
+func TestWriteResultsIgnoresEmptyResults(t *testing.T) {
+	var out bytes.Buffer
+
+	if err := WriteResults(&out, nil); err != nil {
+		t.Fatalf("write results: %v", err)
+	}
+	if out.String() != "" {
+		t.Fatalf("expected no output, got %q", out.String())
 	}
 }
 
@@ -132,9 +265,13 @@ func (c *fakeClient) Stop(ctx context.Context, id string) error {
 
 type fakeRecorder struct {
 	events []audit.Event
+	err    error
 }
 
 func (r *fakeRecorder) Record(event audit.Event) error {
+	if r.err != nil {
+		return r.err
+	}
 	r.events = append(r.events, event)
 	return nil
 }

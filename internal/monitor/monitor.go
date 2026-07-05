@@ -113,8 +113,22 @@ func (m *Monitor) handleProcess(ctx context.Context, p process.Process, procs []
 		return
 	}
 
-	descendants := processtree.Descendants(procs, p.PID)
+	descendants := m.killDescendants(procs, p.PID)
 	m.killExpiredOffense(ctx, p, descendants)
+}
+
+func (m *Monitor) killDescendants(
+	procs []process.Process,
+	pid int32,
+) []process.Process {
+	descendants := processtree.Descendants(procs, pid)
+	filtered := make([]process.Process, 0, len(descendants))
+	for _, descendant := range descendants {
+		if !m.cfg.IsProtected(descendant.Name) {
+			filtered = append(filtered, descendant)
+		}
+	}
+	return filtered
 }
 
 func (m *Monitor) recordNewOffense(p process.Process) bool {
@@ -199,24 +213,32 @@ func (m *Monitor) killTreeAndLog(
 	p process.Process,
 	descendants []process.Process,
 ) bool {
-	if err := m.killTree(ctx, p, descendants); err != nil {
+	rootKilled, err := m.killTree(ctx, p, descendants)
+	if err != nil {
 		log.Error("Failed to kill process", "pid", p.PID, "name", p.Name, "error", err)
-		return false
 	}
-	return true
+	return rootKilled
 }
 
 func (m *Monitor) killTree(
 	ctx context.Context,
 	p process.Process,
 	descendants []process.Process,
-) error {
+) (bool, error) {
+	var firstErr error
+	rootKilled := false
 	for _, proc := range processtree.KillOrder(p, descendants) {
 		if err := m.killer.Kill(ctx, proc.PID); err != nil {
-			return err
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if proc.PID == p.PID {
+			rootKilled = true
 		}
 	}
-	return nil
+	return rootKilled, firstErr
 }
 
 func (m *Monitor) notifyKilled(p process.Process) {

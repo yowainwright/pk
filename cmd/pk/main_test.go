@@ -153,6 +153,35 @@ func TestRunCleanupIncludesDockerTargets(t *testing.T) {
 	}
 }
 
+func TestRunCleanupIgnoresUnavailableDockerDaemon(t *testing.T) {
+	deps := commandDeps(t)
+	deps.docker.available = true
+	message := "Cannot connect to the Docker daemon. Is the docker daemon running?"
+	deps.docker.err = errors.New(message)
+	var out bytes.Buffer
+
+	err := run([]string{"cleanup"}, &out)
+	if err != nil {
+		t.Fatalf("run cleanup: %v", err)
+	}
+	if out.String() != "No cleanup targets found.\n" {
+		t.Fatalf("unexpected cleanup output %q", out.String())
+	}
+}
+
+func TestRunCleanupReturnsDockerListErrors(t *testing.T) {
+	deps := commandDeps(t)
+	deps.docker.available = true
+	deps.docker.err = errors.New("permission denied")
+	var out bytes.Buffer
+
+	err := run([]string{"cleanup"}, &out)
+
+	if err == nil {
+		t.Fatal("expected docker list error")
+	}
+}
+
 func TestCleanupConfigParsesWatchOptions(t *testing.T) {
 	cfg, options, err := cleanupConfig([]string{"--apply", "--watch", "-interval", "5s"})
 	if err != nil {
@@ -644,8 +673,11 @@ func installCommandDeps(t *testing.T, deps *commandTestDeps) {
 	newBackgroundManager = func() (backgroundManager, error) {
 		return deps.background, deps.backgroundErr
 	}
-	newSkillInstaller = func() skillInstaller {
-		return deps.skills
+	installSkill = func(root string) (string, error) {
+		return deps.skills.Install(root)
+	}
+	defaultSkillRoot = func() (string, error) {
+		return deps.skills.DefaultRoot()
 	}
 	sendNotification = func(title string, message string) error {
 		deps.notificationTitle = title
@@ -663,7 +695,8 @@ type savedCommandDeps struct {
 	newDocker        func() docker.Client
 	newRunner        func(*config.Config) monitorRunner
 	newBackground    func() (backgroundManager, error)
-	newSkills        func() skillInstaller
+	installSkill     func(string) (string, error)
+	defaultSkillRoot func() (string, error)
 	send             func(string, string) error
 	handleSignalFunc func(context.CancelFunc)
 	notifySignalFunc func(chan<- os.Signal, ...os.Signal)
@@ -679,7 +712,8 @@ func saveCommandDeps() savedCommandDeps {
 		newDocker:        newDockerClient,
 		newRunner:        newMonitorRunner,
 		newBackground:    newBackgroundManager,
-		newSkills:        newSkillInstaller,
+		installSkill:     installSkill,
+		defaultSkillRoot: defaultSkillRoot,
 		send:             sendNotification,
 		handleSignalFunc: handleShutdownSignal,
 		notifySignalFunc: notifySignal,
@@ -695,7 +729,8 @@ func (d savedCommandDeps) restore() {
 	newDockerClient = d.newDocker
 	newMonitorRunner = d.newRunner
 	newBackgroundManager = d.newBackground
-	newSkillInstaller = d.newSkills
+	installSkill = d.installSkill
+	defaultSkillRoot = d.defaultSkillRoot
 	sendNotification = d.send
 	handleShutdownSignal = d.handleSignalFunc
 	notifySignal = d.notifySignalFunc
