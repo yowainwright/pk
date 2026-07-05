@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	launchdLabel = "com.jeffrywainwright.pk"
+	launchdLabel = "com.yowainwright.pk"
 	systemdUnit  = "pk.service"
 )
 

@@ -18,6 +18,7 @@ func TestInstallLaunchdWritesPlistAndStartsService(t *testing.T) {
 
 	data := readServiceFile(t, manager)
 	assertContains(t, data, launchdLabel)
+	assertContains(t, data, "com.yowainwright.pk")
 	assertContains(t, data, "/bin/pk")
 	assertContains(t, data, "--watch")
 	assertCommands(t, runner, "launchctl bootout")
