@@ -32,6 +32,18 @@ func TestKillOrderKillsChildrenBeforeParents(t *testing.T) {
 	assertPIDs(t, order, 3, 2, 1)
 }
 
+func TestKillOrderIncludesDescendantsBelowFilteredIntermediaries(t *testing.T) {
+	root := testProcess(1, 0)
+	descendants := []process.Process{
+		testProcess(3, 2),
+		testProcess(4, 3),
+	}
+
+	order := KillOrder(root, descendants)
+
+	assertPIDs(t, order, 4, 3, 1)
+}
+
 func TestDescendantsIgnoresCycles(t *testing.T) {
 	procs := []process.Process{
 		testProcess(2, 1),

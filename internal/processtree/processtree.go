@@ -19,6 +19,7 @@ func KillOrder(root process.Process, descendants []process.Process) []process.Pr
 	seen := map[int32]bool{root.PID: true}
 	order := make([]process.Process, 0, len(descendants)+1)
 	appendKillOrder(root.PID, children, seen, &order)
+	appendRemainingKillOrder(descendants, children, seen, &order)
 	order = append(order, root)
 	return order
 }
@@ -69,5 +70,21 @@ func appendKillOrder(
 		seen[child.PID] = true
 		appendKillOrder(child.PID, children, seen, order)
 		*order = append(*order, child)
+	}
+}
+
+func appendRemainingKillOrder(
+	descendants []process.Process,
+	children map[int32][]process.Process,
+	seen map[int32]bool,
+	order *[]process.Process,
+) {
+	for _, proc := range descendants {
+		if seen[proc.PID] {
+			continue
+		}
+		seen[proc.PID] = true
+		appendKillOrder(proc.PID, children, seen, order)
+		*order = append(*order, proc)
 	}
 }
