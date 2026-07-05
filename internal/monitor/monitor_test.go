@@ -36,6 +36,23 @@ func TestCheckKillsAfterGracePeriod(t *testing.T) {
 	}
 }
 
+func TestCheckKillsDescendantsBeforeParent(t *testing.T) {
+	cfg := applyConfig()
+	cfg.GracePeriod = 0
+	killer := &fakeKiller{}
+	monitor := testMonitorWithKiller(cfg, killer)
+	parent := overCPUProcess()
+	child := normalProcess()
+	child.PID = 43
+	child.ParentPID = 42
+	monitor.lister = &fakeLister{procs: []process.Process{parent, child}}
+
+	monitor.check(context.Background())
+	monitor.check(context.Background())
+
+	assertKilled(t, killer, 43, 42)
+}
+
 func TestRunStopsWhenContextIsCanceled(t *testing.T) {
 	monitor := testMonitor(applyConfig())
 	ctx, cancel := context.WithCancel(context.Background())
@@ -192,12 +209,14 @@ func (l *fakeLister) List(ctx context.Context) ([]process.Process, error) {
 type fakeKiller struct {
 	called bool
 	pid    int32
+	pids   []int32
 	err    error
 }
 
 func (k *fakeKiller) Kill(ctx context.Context, pid int32) error {
 	k.called = true
 	k.pid = pid
+	k.pids = append(k.pids, pid)
 	return k.err
 }
 
@@ -255,4 +274,16 @@ func processes(proc process.Process) []process.Process {
 	procs := make([]process.Process, 0, 1)
 	procs = append(procs, proc)
 	return procs
+}
+
+func assertKilled(t *testing.T, killer *fakeKiller, expected ...int32) {
+	t.Helper()
+	if len(killer.pids) != len(expected) {
+		t.Fatalf("expected killed pids %#v, got %#v", expected, killer.pids)
+	}
+	for i, pid := range expected {
+		if killer.pids[i] != pid {
+			t.Fatalf("expected pid %d at %d, got %#v", pid, i, killer.pids)
+		}
+	}
 }

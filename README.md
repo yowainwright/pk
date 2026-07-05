@@ -24,10 +24,29 @@ Kill high-confidence cleanup targets:
 pk cleanup --apply
 ```
 
+Run cleanup continuously on the configured interval:
+
+```sh
+pk cleanup --apply --watch
+```
+
 Show cleanup audit events:
 
 ```sh
 pk history
+```
+
+Install background cleanup for the current user:
+
+```sh
+pk install
+```
+
+Check or remove background cleanup:
+
+```sh
+pk status
+pk uninstall
 ```
 
 Run the existing threshold monitor:
@@ -39,8 +58,10 @@ pk monitor
 Dry-run is the default. Use `-dry-run=false` only when you want the monitor to
 terminate matching processes.
 
-Cleanup writes bounded JSONL audit events. Set `PK_AUDIT_PATH` to override the
-default audit file location.
+Background cleanup uses `launchd` on macOS and `systemd --user` on Linux. It
+runs `pk cleanup --apply --watch` with no external dependencies. Cleanup kills
+target process trees child-first and writes bounded JSONL audit events. Set
+`PK_AUDIT_PATH` to override the default audit file location.
 
 ## Development
 

@@ -54,18 +54,38 @@ func ParseArgsWith(
 	args []string,
 	registerExtra func(*flag.FlagSet),
 ) (*Config, error) {
+	cfg, flags, protectedStr := configFlags(name, registerExtra)
+	if err := parseFlags(name, args, flags); err != nil {
+		return nil, err
+	}
+	return finishConfig(cfg, *protectedStr)
+}
+
+func configFlags(
+	name string,
+	registerExtra func(*flag.FlagSet),
+) (*Config, *flag.FlagSet, *string) {
 	cfg := &Config{}
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	protectedStr := registerFlags(flags, cfg)
 	if registerExtra != nil {
 		registerExtra(flags)
 	}
+	return cfg, flags, protectedStr
+}
 
+func parseFlags(name string, args []string, flags *flag.FlagSet) error {
 	if err := flags.Parse(args); err != nil {
-		return nil, fmt.Errorf("parsing %s flags: %w", name, err)
+		return fmt.Errorf("parsing %s flags: %w", name, err)
 	}
+	return nil
+}
 
-	cfg.Protected = protectedNames(*protectedStr)
+func finishConfig(cfg *Config, protectedStr string) (*Config, error) {
+	cfg.Protected = protectedNames(protectedStr)
+	if err := validate(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -92,6 +112,16 @@ func protectedNames(protectedStr string) []string {
 	}
 
 	return protected
+}
+
+func validate(cfg *Config) error {
+	if cfg.Interval <= 0 {
+		return fmt.Errorf("interval must be positive")
+	}
+	if cfg.GracePeriod < 0 {
+		return fmt.Errorf("grace period must not be negative")
+	}
+	return nil
 }
 
 func (c *Config) IsProtected(name string) bool {

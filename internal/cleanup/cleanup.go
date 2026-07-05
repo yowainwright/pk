@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/jeffrywainwright/pk/internal/audit"
+	"github.com/jeffrywainwright/pk/internal/process"
+	"github.com/jeffrywainwright/pk/internal/processtree"
 	"github.com/jeffrywainwright/pk/internal/scan"
 )
 
@@ -20,6 +22,7 @@ type Recorder interface {
 
 type Result struct {
 	Report  scan.Report
+	Process process.Process
 	Applied bool
 	Error   string
 }
@@ -34,11 +37,11 @@ func Run(
 	targets := Targets(reports)
 	results := make([]Result, 0, len(targets))
 	for _, report := range targets {
-		result := runOne(ctx, report, killer, apply)
-		if err := recordResult(recorder, result); err != nil {
+		current, err := runOne(ctx, report, killer, recorder, apply)
+		if err != nil {
 			return nil, err
 		}
-		results = append(results, result)
+		results = append(results, current...)
 	}
 	return results, nil
 }
@@ -71,12 +74,37 @@ func isTarget(report scan.Report) bool {
 	return hasKillAction && hasHighConfidence
 }
 
-func runOne(ctx context.Context, report scan.Report, killer Killer, apply bool) Result {
-	result := Result{Report: report, Applied: apply}
+func runOne(
+	ctx context.Context,
+	report scan.Report,
+	killer Killer,
+	recorder Recorder,
+	apply bool,
+) ([]Result, error) {
+	procs := processtree.KillOrder(report.Process, report.Descendants)
+	results := make([]Result, 0, len(procs))
+	for _, proc := range procs {
+		result := runProcess(ctx, report, proc, killer, apply)
+		if err := recordResult(recorder, result); err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func runProcess(
+	ctx context.Context,
+	report scan.Report,
+	proc process.Process,
+	killer Killer,
+	apply bool,
+) Result {
+	result := Result{Report: report, Process: proc, Applied: apply}
 	if !apply {
 		return result
 	}
-	if err := killer.Kill(ctx, report.Process.PID); err != nil {
+	if err := killer.Kill(ctx, proc.PID); err != nil {
 		result.Error = err.Error()
 	}
 	return result
@@ -94,7 +122,7 @@ func recordResult(recorder Recorder, result Result) error {
 }
 
 func eventForResult(result Result) audit.Event {
-	proc := result.Report.Process
+	proc := result.Process
 	return audit.Event{
 		Command:     "cleanup",
 		Action:      string(result.Report.Action),
@@ -118,7 +146,7 @@ func writeRows(w io.Writer, results []Result) error {
 }
 
 func writeRow(w io.Writer, result Result) error {
-	proc := result.Report.Process
+	proc := result.Process
 	_, err := fmt.Fprintf(w, "%d\t%t\t%s\t%s\t%s\n",
 		proc.PID,
 		result.Applied,

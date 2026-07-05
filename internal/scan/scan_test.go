@@ -136,6 +136,22 @@ func TestReportsSortsByPID(t *testing.T) {
 	}
 }
 
+func TestReportsIncludesDescendants(t *testing.T) {
+	cfg := testConfig(t)
+	parent := restartableDevProcess(42)
+	child := newProcess(43, "node")
+	child.ParentPID = 42
+
+	report := onlyReportFromProcesses(t, cfg, []process.Process{parent, child})
+
+	if len(report.Descendants) != 1 {
+		t.Fatalf("expected one descendant, got %d", len(report.Descendants))
+	}
+	if report.Descendants[0].PID != 43 {
+		t.Fatalf("expected descendant pid 43, got %d", report.Descendants[0].PID)
+	}
+}
+
 func TestReportsSkipsProtectedProcessBelowThreshold(t *testing.T) {
 	cfg := testConfig(t)
 	proc := newProcess(42, "Terminal")
@@ -215,7 +231,7 @@ func restartableDevProcess(pid int32) process.Process {
 }
 
 func reportsForOutput() []Report {
-	report := newReport(newProcess(7, "node"))
+	report := reportForOutput(newProcess(7, "node"))
 	report.Action = ActionKill
 	report.Confidence = ConfidenceHigh
 	report.Reasons = append(report.Reasons, "restartable-command", "dev-cwd")
@@ -236,7 +252,16 @@ func testConfig(t *testing.T, args ...string) *config.Config {
 
 func onlyReport(t *testing.T, cfg *config.Config, proc process.Process) Report {
 	t.Helper()
-	reports := Reports(cfg, processes(proc))
+	return onlyReportFromProcesses(t, cfg, processes(proc))
+}
+
+func onlyReportFromProcesses(
+	t *testing.T,
+	cfg *config.Config,
+	procs []process.Process,
+) Report {
+	t.Helper()
+	reports := Reports(cfg, procs)
 	if len(reports) != 1 {
 		t.Fatalf("expected one report, got %d", len(reports))
 	}
@@ -256,7 +281,7 @@ func newProcess(pid int32, name string) process.Process {
 	return proc
 }
 
-func newReport(proc process.Process) Report {
+func reportForOutput(proc process.Process) Report {
 	var report Report
 	report.Process = proc
 	return report

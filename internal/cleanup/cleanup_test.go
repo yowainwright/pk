@@ -42,10 +42,28 @@ func TestRunApplyKillsTargets(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected one result, got %d", len(results))
 	}
-	if killer.pid != 42 {
-		t.Fatalf("expected pid 42, got %d", killer.pid)
-	}
+	assertKilled(t, killer, 42)
 	assertRecorded(t, recorder, apply)
+}
+
+func TestRunKillsDescendantsBeforeTarget(t *testing.T) {
+	killer := &fakeKiller{}
+	recorder := &fakeRecorder{}
+	report := testReport(42, scan.ActionKill, scan.ConfidenceHigh)
+	report.Descendants = append(report.Descendants, childProcess(43, 42))
+	report.Descendants = append(report.Descendants, childProcess(44, 43))
+	apply := true
+
+	results, err := Run(context.Background(), reports(report), killer, recorder, apply)
+
+	assertNoError(t, err)
+	if len(results) != 3 {
+		t.Fatalf("expected three results, got %d", len(results))
+	}
+	assertKilled(t, killer, 44, 43, 42)
+	if len(recorder.events) != 3 {
+		t.Fatalf("expected three events, got %d", len(recorder.events))
+	}
 }
 
 func TestRunRecordsKillErrors(t *testing.T) {
@@ -76,7 +94,8 @@ func TestTargetsIgnoresReportsBelowHighConfidence(t *testing.T) {
 
 func TestWriteResultsWritesTabularOutput(t *testing.T) {
 	var out bytes.Buffer
-	result := Result{Report: testReport(42, scan.ActionKill, scan.ConfidenceHigh)}
+	report := testReport(42, scan.ActionKill, scan.ConfidenceHigh)
+	result := Result{Report: report, Process: report.Process}
 	results := make([]Result, 0, 1)
 	results = append(results, result)
 
@@ -116,12 +135,14 @@ func TestRunReturnsRecorderErrors(t *testing.T) {
 type fakeKiller struct {
 	called bool
 	pid    int32
+	pids   []int32
 	err    error
 }
 
 func (k *fakeKiller) Kill(ctx context.Context, pid int32) error {
 	k.called = true
 	k.pid = pid
+	k.pids = append(k.pids, pid)
 	return k.err
 }
 
@@ -154,6 +175,12 @@ func testProcess(pid int32) process.Process {
 	return proc
 }
 
+func childProcess(pid int32, parentPID int32) process.Process {
+	proc := testProcess(pid)
+	proc.ParentPID = parentPID
+	return proc
+}
+
 func reports(report scan.Report) []scan.Report {
 	reports := make([]scan.Report, 0, 1)
 	reports = append(reports, report)
@@ -174,5 +201,17 @@ func assertRecorded(t *testing.T, recorder *fakeRecorder, applied bool) {
 	}
 	if recorder.events[0].Applied != applied {
 		t.Fatalf("expected applied %t", applied)
+	}
+}
+
+func assertKilled(t *testing.T, killer *fakeKiller, expected ...int32) {
+	t.Helper()
+	if len(killer.pids) != len(expected) {
+		t.Fatalf("expected killed pids %#v, got %#v", expected, killer.pids)
+	}
+	for i, pid := range expected {
+		if killer.pids[i] != pid {
+			t.Fatalf("expected pid %d at %d, got %#v", pid, i, killer.pids)
+		}
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/jeffrywainwright/pk/internal/config"
 	"github.com/jeffrywainwright/pk/internal/killer"
 	"github.com/jeffrywainwright/pk/internal/process"
+	"github.com/jeffrywainwright/pk/internal/processtree"
 )
 
 type offense struct {
@@ -92,13 +93,13 @@ func (m *Monitor) handleProcesses(ctx context.Context, procs []process.Process) 
 
 	for _, p := range procs {
 		seen[p.PID] = true
-		m.handleProcess(ctx, p)
+		m.handleProcess(ctx, p, procs)
 	}
 
 	return seen
 }
 
-func (m *Monitor) handleProcess(ctx context.Context, p process.Process) {
+func (m *Monitor) handleProcess(ctx context.Context, p process.Process, procs []process.Process) {
 	if m.cfg.IsProtected(p.Name) {
 		return
 	}
@@ -112,7 +113,8 @@ func (m *Monitor) handleProcess(ctx context.Context, p process.Process) {
 		return
 	}
 
-	m.killExpiredOffense(ctx, p)
+	descendants := processtree.Descendants(procs, p.PID)
+	m.killExpiredOffense(ctx, p, descendants)
 }
 
 func (m *Monitor) recordNewOffense(p process.Process) bool {
@@ -124,7 +126,11 @@ func (m *Monitor) recordNewOffense(p process.Process) bool {
 	return true
 }
 
-func (m *Monitor) killExpiredOffense(ctx context.Context, p process.Process) {
+func (m *Monitor) killExpiredOffense(
+	ctx context.Context,
+	p process.Process,
+	descendants []process.Process,
+) {
 	off := m.offenses[p.PID]
 	off.proc = p
 	elapsed := time.Since(off.firstSeen)
@@ -132,7 +138,7 @@ func (m *Monitor) killExpiredOffense(ctx context.Context, p process.Process) {
 		return
 	}
 
-	m.killProcess(ctx, p, elapsed)
+	m.killProcess(ctx, p, descendants, elapsed)
 	delete(m.offenses, p.PID)
 }
 
@@ -163,21 +169,54 @@ func (m *Monitor) recordOffense(p process.Process) {
 	)
 }
 
-func (m *Monitor) killProcess(ctx context.Context, p process.Process, duration time.Duration) {
+func (m *Monitor) killProcess(
+	ctx context.Context,
+	p process.Process,
+	descendants []process.Process,
+	duration time.Duration,
+) {
 	m.logKill(p, duration)
 
 	if m.cfg.DryRun {
-		log.Info("Dry run - skipping kill", "pid", p.PID, "name", p.Name)
+		m.logDryRun(p)
 		return
 	}
 
-	if err := m.killer.Kill(ctx, p.PID); err != nil {
-		log.Error("Failed to kill process", "pid", p.PID, "name", p.Name, "error", err)
+	if !m.killTreeAndLog(ctx, p, descendants) {
 		return
 	}
 
 	log.Info("Process terminated", "pid", p.PID, "name", p.Name)
 	m.notifyKilled(p)
+}
+
+func (m *Monitor) logDryRun(p process.Process) {
+	log.Info("Dry run - skipping kill", "pid", p.PID, "name", p.Name)
+}
+
+func (m *Monitor) killTreeAndLog(
+	ctx context.Context,
+	p process.Process,
+	descendants []process.Process,
+) bool {
+	if err := m.killTree(ctx, p, descendants); err != nil {
+		log.Error("Failed to kill process", "pid", p.PID, "name", p.Name, "error", err)
+		return false
+	}
+	return true
+}
+
+func (m *Monitor) killTree(
+	ctx context.Context,
+	p process.Process,
+	descendants []process.Process,
+) error {
+	for _, proc := range processtree.KillOrder(p, descendants) {
+		if err := m.killer.Kill(ctx, proc.PID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *Monitor) notifyKilled(p process.Process) {

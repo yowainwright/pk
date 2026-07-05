@@ -10,6 +10,7 @@ import (
 
 	"github.com/jeffrywainwright/pk/internal/config"
 	"github.com/jeffrywainwright/pk/internal/process"
+	"github.com/jeffrywainwright/pk/internal/processtree"
 )
 
 type Action string
@@ -28,10 +29,11 @@ const (
 )
 
 type Report struct {
-	Process    process.Process
-	Action     Action
-	Confidence Confidence
-	Reasons    []string
+	Process     process.Process
+	Descendants []process.Process
+	Action      Action
+	Confidence  Confidence
+	Reasons     []string
 }
 
 type Scanner struct {
@@ -54,7 +56,7 @@ func (s *Scanner) Scan(ctx context.Context) ([]Report, error) {
 func Reports(cfg *config.Config, procs []process.Process) []Report {
 	reports := make([]Report, 0, len(procs))
 	for _, proc := range procs {
-		report, ok := reportForProcess(cfg, proc)
+		report, ok := reportForProcess(cfg, proc, procs)
 		if ok {
 			reports = append(reports, report)
 		}
@@ -75,7 +77,11 @@ func WriteReports(w io.Writer, reports []Report) error {
 	return writeReportRows(w, reports)
 }
 
-func reportForProcess(cfg *config.Config, proc process.Process) (Report, bool) {
+func reportForProcess(
+	cfg *config.Config,
+	proc process.Process,
+	procs []process.Process,
+) (Report, bool) {
 	reasons := reasonsForProcess(cfg, proc)
 	if len(reasons) == 0 {
 		return Report{}, false
@@ -83,7 +89,25 @@ func reportForProcess(cfg *config.Config, proc process.Process) (Report, bool) {
 
 	confidence := confidenceForReasons(reasons)
 	action := actionForConfidence(confidence)
-	return Report{Process: proc, Action: action, Confidence: confidence, Reasons: reasons}, true
+	descendants := processtree.Descendants(procs, proc.PID)
+	report := newReport(proc, descendants, action, confidence, reasons)
+	return report, true
+}
+
+func newReport(
+	proc process.Process,
+	descendants []process.Process,
+	action Action,
+	confidence Confidence,
+	reasons []string,
+) Report {
+	return Report{
+		Process:     proc,
+		Descendants: descendants,
+		Action:      action,
+		Confidence:  confidence,
+		Reasons:     reasons,
+	}
 }
 
 func protectedReasons(cfg *config.Config, proc process.Process) []string {

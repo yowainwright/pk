@@ -134,6 +134,49 @@ func TestRunCleanupApplyKillsTarget(t *testing.T) {
 	assertCleanupEvent(t, deps.audit.events[0], applied)
 }
 
+func TestCleanupConfigParsesWatchOptions(t *testing.T) {
+	cfg, options, err := cleanupConfig([]string{"--apply", "--watch", "-interval", "5s"})
+	if err != nil {
+		t.Fatalf("cleanup config: %v", err)
+	}
+	if !options.apply {
+		t.Fatal("expected apply option")
+	}
+	if !options.watch {
+		t.Fatal("expected watch option")
+	}
+	if cfg.Interval != 5*time.Second {
+		t.Fatalf("expected five second interval, got %s", cfg.Interval)
+	}
+}
+
+func TestCleanupLoopStopsWhenCanceled(t *testing.T) {
+	cfg := &config.Config{}
+	options := cleanupOptions{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := cleanupLoop(ctx, nil, cfg, options, &bytes.Buffer{})
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled context, got %v", err)
+	}
+}
+
+func TestCleanupLoopRunsOnTicks(t *testing.T) {
+	deps := commandDeps(t)
+	deps.scanner.err = errors.New("scan failed")
+	cfg := &config.Config{}
+	ticks := make(chan time.Time, 1)
+	ticks <- time.Now()
+
+	err := cleanupLoop(context.Background(), ticks, cfg, cleanupOptions{}, &bytes.Buffer{})
+
+	if err == nil {
+		t.Fatal("expected scan error")
+	}
+}
+
 func TestRunHistoryReturnsAuditError(t *testing.T) {
 	deps := commandDeps(t)
 	deps.audit.err = errors.New("read failed")
@@ -157,6 +200,85 @@ func TestRunHistoryWritesAuditEvents(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), `"name":"node"`) {
 		t.Fatalf("unexpected history output %q", out.String())
+	}
+}
+
+func TestRunInstallInstallsBackgroundService(t *testing.T) {
+	deps := commandDeps(t)
+	var out bytes.Buffer
+
+	err := run([]string{"install"}, &out)
+	if err != nil {
+		t.Fatalf("run install: %v", err)
+	}
+	if !deps.background.installed {
+		t.Fatal("expected background install")
+	}
+	if out.String() != "installed\n" {
+		t.Fatalf("unexpected output %q", out.String())
+	}
+}
+
+func TestRunUninstallRemovesBackgroundService(t *testing.T) {
+	deps := commandDeps(t)
+	var out bytes.Buffer
+
+	err := run([]string{"uninstall"}, &out)
+	if err != nil {
+		t.Fatalf("run uninstall: %v", err)
+	}
+	if !deps.background.uninstalled {
+		t.Fatal("expected background uninstall")
+	}
+}
+
+func TestRunUninstallReturnsManagerErrors(t *testing.T) {
+	deps := commandDeps(t)
+	deps.backgroundErr = errors.New("manager failed")
+	var out bytes.Buffer
+
+	err := run([]string{"uninstall"}, &out)
+
+	if err == nil {
+		t.Fatal("expected manager error")
+	}
+}
+
+func TestRunStatusPrintsBackgroundStatus(t *testing.T) {
+	deps := commandDeps(t)
+	deps.background.status = "active"
+	var out bytes.Buffer
+
+	err := run([]string{"status"}, &out)
+	if err != nil {
+		t.Fatalf("run status: %v", err)
+	}
+	if out.String() != "active\n" {
+		t.Fatalf("unexpected status output %q", out.String())
+	}
+}
+
+func TestRunStatusReturnsStatusErrors(t *testing.T) {
+	deps := commandDeps(t)
+	deps.background.err = errors.New("status failed")
+	var out bytes.Buffer
+
+	err := run([]string{"status"}, &out)
+
+	if err == nil {
+		t.Fatal("expected status error")
+	}
+}
+
+func TestRunInstallReturnsManagerErrors(t *testing.T) {
+	deps := commandDeps(t)
+	deps.backgroundErr = errors.New("manager failed")
+	var out bytes.Buffer
+
+	err := run([]string{"install"}, &out)
+
+	if err == nil {
+		t.Fatal("expected manager error")
 	}
 }
 
@@ -356,12 +478,35 @@ func (r *fakeRunner) Run(ctx context.Context) error {
 	return r.err
 }
 
+type fakeBackgroundManager struct {
+	installed   bool
+	uninstalled bool
+	status      string
+	err         error
+}
+
+func (m *fakeBackgroundManager) Install() error {
+	m.installed = true
+	return m.err
+}
+
+func (m *fakeBackgroundManager) Uninstall() error {
+	m.uninstalled = true
+	return m.err
+}
+
+func (m *fakeBackgroundManager) Status() (string, error) {
+	return m.status, m.err
+}
+
 type commandTestDeps struct {
 	scanner             *fakeScanner
 	audit               *fakeAuditStore
 	auditStoreErr       error
 	killer              *fakeCommandKiller
 	runner              *fakeRunner
+	background          *fakeBackgroundManager
+	backgroundErr       error
 	cfg                 *config.Config
 	notificationTitle   string
 	notificationMessage string
@@ -374,6 +519,7 @@ func commandDeps(t *testing.T) *commandTestDeps {
 	deps.audit = &fakeAuditStore{}
 	deps.killer = &fakeCommandKiller{}
 	deps.runner = &fakeRunner{}
+	deps.background = &fakeBackgroundManager{}
 	installCommandDeps(t, deps)
 	return deps
 }
@@ -395,6 +541,9 @@ func installCommandDeps(t *testing.T, deps *commandTestDeps) {
 		deps.cfg = cfg
 		return deps.runner
 	}
+	newBackgroundManager = func() (backgroundManager, error) {
+		return deps.background, deps.backgroundErr
+	}
 	sendNotification = func(title string, message string) error {
 		deps.notificationTitle = title
 		deps.notificationMessage = message
@@ -409,6 +558,7 @@ type savedCommandDeps struct {
 	newAudit         func() (auditStore, error)
 	newKiller        func() killer.Killer
 	newRunner        func(*config.Config) monitorRunner
+	newBackground    func() (backgroundManager, error)
 	send             func(string, string) error
 	handleSignalFunc func(context.CancelFunc)
 	notifySignalFunc func(chan<- os.Signal, ...os.Signal)
@@ -422,6 +572,7 @@ func saveCommandDeps() savedCommandDeps {
 		newAudit:         newAuditStore,
 		newKiller:        newProcessKiller,
 		newRunner:        newMonitorRunner,
+		newBackground:    newBackgroundManager,
 		send:             sendNotification,
 		handleSignalFunc: handleShutdownSignal,
 		notifySignalFunc: notifySignal,
@@ -435,6 +586,7 @@ func (d savedCommandDeps) restore() {
 	newAuditStore = d.newAudit
 	newProcessKiller = d.newKiller
 	newMonitorRunner = d.newRunner
+	newBackgroundManager = d.newBackground
 	sendNotification = d.send
 	handleShutdownSignal = d.handleSignalFunc
 	notifySignal = d.notifySignalFunc

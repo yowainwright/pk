@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/charmbracelet/log"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/jeffrywainwright/pk/internal/notify"
 	"github.com/jeffrywainwright/pk/internal/process"
 	"github.com/jeffrywainwright/pk/internal/scan"
+	"github.com/jeffrywainwright/pk/internal/service"
 )
 
 var version = "dev"
@@ -36,12 +38,24 @@ type monitorRunner interface {
 	Run(context.Context) error
 }
 
+type backgroundManager interface {
+	Install() error
+	Uninstall() error
+	Status() (string, error)
+}
+
+type cleanupOptions struct {
+	apply bool
+	watch bool
+}
+
 var (
 	newProcessLister     = func() process.Lister { return process.NewLister() }
 	newProcessScanner    = func(cfg *config.Config, lister process.Lister) processScanner { return scan.New(cfg, lister) }
 	newAuditStore        = func() (auditStore, error) { return audit.DefaultLog() }
 	newProcessKiller     = func() killer.Killer { return killer.New() }
 	newMonitorRunner     = func(cfg *config.Config) monitorRunner { return newMonitor(cfg) }
+	newBackgroundManager = func() (backgroundManager, error) { return service.DefaultManager() }
 	sendNotification     = notify.Send
 	handleShutdownSignal = handleSignals
 	notifySignal         = signal.Notify
@@ -51,6 +65,7 @@ var (
 const (
 	reportTimestamps = true
 	defaultApply     = false
+	defaultWatch     = false
 )
 
 func main() {
@@ -65,15 +80,25 @@ func run(args []string, out io.Writer) error {
 	}
 
 	command, commandArgs := splitCommand(args)
+	return dispatch(command, commandArgs, out)
+}
+
+func dispatch(command string, args []string, out io.Writer) error {
 	switch command {
 	case "", "monitor":
-		return runMonitor(commandArgs)
+		return runMonitor(args)
 	case "scan":
-		return runScan(commandArgs, out)
+		return runScan(args, out)
 	case "cleanup":
-		return runCleanup(commandArgs, out)
+		return runCleanup(args, out)
 	case "history":
 		return runHistory(out)
+	case "install":
+		return runInstall(out)
+	case "uninstall":
+		return runUninstall(out)
+	case "status":
+		return runStatus(out)
 	default:
 		return fmt.Errorf("unknown command %q", command)
 	}
@@ -97,7 +122,11 @@ func runMonitor(args []string) error {
 }
 
 func runScan(args []string, out io.Writer) error {
-	reports, err := scanReports("scan", args)
+	cfg, err := config.ParseArgs("scan", args)
+	if err != nil {
+		return err
+	}
+	reports, err := scanReports(context.Background(), cfg)
 	if err != nil {
 		return err
 	}
@@ -105,21 +134,70 @@ func runScan(args []string, out io.Writer) error {
 }
 
 func runCleanup(args []string, out io.Writer) error {
-	var apply bool
-	reports, err := cleanupReports(args, &apply)
+	cfg, options, err := cleanupConfig(args)
 	if err != nil {
 		return err
 	}
+	if options.watch {
+		return runCleanupWatch(cfg, options, out)
+	}
+	return runCleanupOnce(context.Background(), cfg, options, out)
+}
 
+func runCleanupOnce(
+	ctx context.Context,
+	cfg *config.Config,
+	options cleanupOptions,
+	out io.Writer,
+) error {
+	reports, err := scanReports(ctx, cfg)
+	if err != nil {
+		return err
+	}
 	log, err := newAuditStore()
 	if err != nil {
 		return err
 	}
-	results, err := cleanup.Run(context.Background(), reports, newProcessKiller(), log, apply)
+	results, err := cleanup.Run(ctx, reports, newProcessKiller(), log, options.apply)
 	if err != nil {
 		return err
 	}
 	return cleanup.WriteResults(out, results)
+}
+
+func runCleanupWatch(
+	cfg *config.Config,
+	options cleanupOptions,
+	out io.Writer,
+) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handleShutdownSignal(cancel)
+	if err := runCleanupOnce(ctx, cfg, options, out); err != nil {
+		return err
+	}
+	ticker := time.NewTicker(cfg.Interval)
+	defer ticker.Stop()
+	return cleanupLoop(ctx, ticker.C, cfg, options, out)
+}
+
+func cleanupLoop(
+	ctx context.Context,
+	ticks <-chan time.Time,
+	cfg *config.Config,
+	options cleanupOptions,
+	out io.Writer,
+) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticks:
+			if err := runCleanupOnce(ctx, cfg, options, out); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 func runHistory(out io.Writer) error {
@@ -134,26 +212,59 @@ func runHistory(out io.Writer) error {
 	return audit.WriteEvents(out, events)
 }
 
-func scanReports(name string, args []string) ([]scan.Report, error) {
-	cfg, err := config.ParseArgs(name, args)
+func runInstall(out io.Writer) error {
+	manager, err := newBackgroundManager()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	lister := newProcessLister()
-	scanner := newProcessScanner(cfg, lister)
-	return scanner.Scan(context.Background())
+	if err := manager.Install(); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, "installed")
+	return err
 }
 
-func cleanupReports(args []string, apply *bool) ([]scan.Report, error) {
-	cfg, err := config.ParseArgsWith("cleanup", args, func(flags *flag.FlagSet) {
-		flags.BoolVar(apply, "apply", defaultApply, "Kill cleanup targets")
-	})
+func runUninstall(out io.Writer) error {
+	manager, err := newBackgroundManager()
 	if err != nil {
-		return nil, err
+		return err
 	}
+	if err := manager.Uninstall(); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, "uninstalled")
+	return err
+}
+
+func runStatus(out io.Writer) error {
+	manager, err := newBackgroundManager()
+	if err != nil {
+		return err
+	}
+	status, err := manager.Status()
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, status)
+	return err
+}
+
+func scanReports(ctx context.Context, cfg *config.Config) ([]scan.Report, error) {
 	lister := newProcessLister()
 	scanner := newProcessScanner(cfg, lister)
-	return scanner.Scan(context.Background())
+	return scanner.Scan(ctx)
+}
+
+func cleanupConfig(args []string) (*config.Config, cleanupOptions, error) {
+	var options cleanupOptions
+	cfg, err := config.ParseArgsWith("cleanup", args, func(flags *flag.FlagSet) {
+		flags.BoolVar(&options.apply, "apply", defaultApply, "Kill cleanup targets")
+		flags.BoolVar(&options.watch, "watch", defaultWatch, "Run cleanup on interval")
+	})
+	if err != nil {
+		return nil, cleanupOptions{}, err
+	}
+	return cfg, options, nil
 }
 
 func splitCommand(args []string) (string, []string) {

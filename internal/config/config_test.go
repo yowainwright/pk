@@ -59,6 +59,22 @@ func TestParseArgsReturnsFlagErrors(t *testing.T) {
 	}
 }
 
+func TestParseArgsRejectsNonPositiveIntervals(t *testing.T) {
+	_, err := ParseArgs("test", testArgs("-interval", "0s"))
+
+	if err == nil {
+		t.Fatal("expected interval error")
+	}
+}
+
+func TestParseArgsRejectsNegativeGracePeriods(t *testing.T) {
+	_, err := ParseArgs("test", testArgs("-grace", "-1s"))
+
+	if err == nil {
+		t.Fatal("expected grace error")
+	}
+}
+
 func mustParse(t *testing.T, args ...string) *Config {
 	t.Helper()
 	cfg, err := ParseArgs("test", args)
