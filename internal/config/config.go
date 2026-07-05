@@ -43,7 +43,7 @@ var defaultProtected = []string{
 	"pk",
 }
 
-const defaultDryRun = true
+const defaultDryRun = false
 
 func ParseArgs(name string, args []string) (*Config, error) {
 	return ParseArgsWith(name, args, nil)

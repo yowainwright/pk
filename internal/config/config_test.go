@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestParseArgsUsesSafeDefaults(t *testing.T) {
+func TestParseArgsUsesActiveDefaults(t *testing.T) {
 	cfg := mustParse(t)
 
 	if cfg.CPUThreshold != 80 {
@@ -18,8 +18,8 @@ func TestParseArgsUsesSafeDefaults(t *testing.T) {
 	if cfg.Interval != 3*time.Second {
 		t.Fatalf("expected default interval, got %s", cfg.Interval)
 	}
-	if !cfg.DryRun {
-		t.Fatal("expected dry-run default")
+	if cfg.DryRun {
+		t.Fatal("expected active default")
 	}
 }
 

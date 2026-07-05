@@ -67,8 +67,8 @@ Run the existing threshold monitor:
 pk monitor
 ```
 
-Dry-run is the default. Use `-dry-run=false` only when you want the monitor to
-terminate matching processes.
+The monitor terminates matching processes by default. Use `-dry-run` when you
+want to observe without killing.
 
 Background cleanup uses `launchd` on macOS and `systemd --user` on Linux. It
 runs `pk cleanup --apply --watch` with no external dependencies. Cleanup kills
