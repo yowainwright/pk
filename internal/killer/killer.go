@@ -8,22 +8,34 @@ import (
 	"time"
 )
 
+const defaultPollInterval = 100 * time.Millisecond
+
 type Killer interface {
 	Kill(ctx context.Context, pid int32) error
 }
 
+type processHandle interface {
+	Signal(os.Signal) error
+}
+
 type SignalKiller struct {
-	termTimeout time.Duration
+	termTimeout  time.Duration
+	pollInterval time.Duration
+}
+
+var findProcess = func(pid int32) (processHandle, error) {
+	return os.FindProcess(int(pid))
 }
 
 func New() *SignalKiller {
 	return &SignalKiller{
-		termTimeout: 2 * time.Second,
+		termTimeout:  2 * time.Second,
+		pollInterval: defaultPollInterval,
 	}
 }
 
 func (k *SignalKiller) Kill(ctx context.Context, pid int32) error {
-	proc, err := os.FindProcess(int(pid))
+	proc, err := findProcess(pid)
 	if err != nil {
 		return fmt.Errorf("finding process %d: %w", pid, err)
 	}
@@ -42,7 +54,7 @@ func (k *SignalKiller) Kill(ctx context.Context, pid int32) error {
 
 func (k *SignalKiller) waitForExit(ctx context.Context, pid int32, timeout time.Duration) bool {
 	deadline := time.After(timeout)
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(k.pollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -60,7 +72,7 @@ func (k *SignalKiller) waitForExit(ctx context.Context, pid int32, timeout time.
 }
 
 func processExists(pid int32) bool {
-	proc, err := os.FindProcess(int(pid))
+	proc, err := findProcess(pid)
 	if err != nil {
 		return false
 	}
@@ -68,7 +80,7 @@ func processExists(pid int32) bool {
 	return err == nil
 }
 
-func signalProcess(proc *os.Process, pid int32, signal syscall.Signal) error {
+func signalProcess(proc processHandle, pid int32, signal syscall.Signal) error {
 	err := proc.Signal(signal)
 	if err == nil {
 		return nil

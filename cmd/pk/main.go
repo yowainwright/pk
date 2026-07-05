@@ -2,49 +2,192 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/charmbracelet/log"
 
+	"github.com/jeffrywainwright/pk/internal/audit"
+	"github.com/jeffrywainwright/pk/internal/cleanup"
 	"github.com/jeffrywainwright/pk/internal/config"
 	"github.com/jeffrywainwright/pk/internal/killer"
 	"github.com/jeffrywainwright/pk/internal/monitor"
 	"github.com/jeffrywainwright/pk/internal/notify"
 	"github.com/jeffrywainwright/pk/internal/process"
+	"github.com/jeffrywainwright/pk/internal/scan"
 )
 
 var version = "dev"
 
-const reportTimestamps = true
+type processScanner interface {
+	Scan(context.Context) ([]scan.Report, error)
+}
+
+type auditStore interface {
+	Record(audit.Event) error
+	Events() ([]audit.Event, error)
+}
+
+type monitorRunner interface {
+	Run(context.Context) error
+}
+
+var (
+	newProcessLister     = func() process.Lister { return process.NewLister() }
+	newProcessScanner    = func(cfg *config.Config, lister process.Lister) processScanner { return scan.New(cfg, lister) }
+	newAuditStore        = func() (auditStore, error) { return audit.DefaultLog() }
+	newProcessKiller     = func() killer.Killer { return killer.New() }
+	newMonitorRunner     = func(cfg *config.Config) monitorRunner { return newMonitor(cfg) }
+	sendNotification     = notify.Send
+	handleShutdownSignal = handleSignals
+	notifySignal         = signal.Notify
+	exitProcess          = os.Exit
+)
+
+const (
+	reportTimestamps = true
+	defaultApply     = false
+)
 
 func main() {
-	if isVersionCommand(os.Args) {
-		fmt.Println("pk", version)
-		return
-	}
-
-	err := run(config.Parse())
+	err := run(os.Args[1:], os.Stdout)
 	exitOnError(err)
 }
 
-func run(cfg *config.Config) error {
+func run(args []string, out io.Writer) error {
+	if isVersionCommand(args) {
+		_, err := fmt.Fprintln(out, "pk", version)
+		return err
+	}
+
+	command, commandArgs := splitCommand(args)
+	switch command {
+	case "", "monitor":
+		return runMonitor(commandArgs)
+	case "scan":
+		return runScan(commandArgs, out)
+	case "cleanup":
+		return runCleanup(commandArgs, out)
+	case "history":
+		return runHistory(out)
+	default:
+		return fmt.Errorf("unknown command %q", command)
+	}
+}
+
+func runMonitor(args []string) error {
+	cfg, err := config.ParseArgs("monitor", args)
+	if err != nil {
+		return err
+	}
+
 	log.SetLevel(log.InfoLevel)
 	log.SetReportTimestamp(reportTimestamps)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	handleSignals(cancel)
-	m := newMonitor(cfg)
+	handleShutdownSignal(cancel)
+	m := newMonitorRunner(cfg)
 	return m.Run(ctx)
+}
+
+func runScan(args []string, out io.Writer) error {
+	reports, err := scanReports("scan", args)
+	if err != nil {
+		return err
+	}
+	return scan.WriteReports(out, reports)
+}
+
+func runCleanup(args []string, out io.Writer) error {
+	var apply bool
+	reports, err := cleanupReports(args, &apply)
+	if err != nil {
+		return err
+	}
+
+	log, err := newAuditStore()
+	if err != nil {
+		return err
+	}
+	results, err := cleanup.Run(context.Background(), reports, newProcessKiller(), log, apply)
+	if err != nil {
+		return err
+	}
+	return cleanup.WriteResults(out, results)
+}
+
+func runHistory(out io.Writer) error {
+	log, err := newAuditStore()
+	if err != nil {
+		return err
+	}
+	events, err := log.Events()
+	if err != nil {
+		return err
+	}
+	return audit.WriteEvents(out, events)
+}
+
+func scanReports(name string, args []string) ([]scan.Report, error) {
+	cfg, err := config.ParseArgs(name, args)
+	if err != nil {
+		return nil, err
+	}
+	lister := newProcessLister()
+	scanner := newProcessScanner(cfg, lister)
+	return scanner.Scan(context.Background())
+}
+
+func cleanupReports(args []string, apply *bool) ([]scan.Report, error) {
+	cfg, err := config.ParseArgsWith("cleanup", args, func(flags *flag.FlagSet) {
+		flags.BoolVar(apply, "apply", defaultApply, "Kill cleanup targets")
+	})
+	if err != nil {
+		return nil, err
+	}
+	lister := newProcessLister()
+	scanner := newProcessScanner(cfg, lister)
+	return scanner.Scan(context.Background())
+}
+
+func splitCommand(args []string) (string, []string) {
+	args = trimSeparator(args)
+	if len(args) == 0 {
+		return "", args
+	}
+	if isFlag(args[0]) {
+		return "", args
+	}
+	return args[0], args[1:]
+}
+
+func trimSeparator(args []string) []string {
+	if len(args) == 0 {
+		return args
+	}
+	if args[0] == "--" {
+		return args[1:]
+	}
+	return args
+}
+
+func isFlag(arg string) bool {
+	hasValue := len(arg) > 0
+	if !hasValue {
+		return false
+	}
+	return arg[0] == '-'
 }
 
 func handleSignals(cancel context.CancelFunc) {
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	notifySignal(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
 		log.Info("Received shutdown signal")
@@ -53,14 +196,14 @@ func handleSignals(cancel context.CancelFunc) {
 }
 
 func newMonitor(cfg *config.Config) *monitor.Monitor {
-	lister := process.NewLister()
-	processKiller := killer.New()
+	lister := newProcessLister()
+	processKiller := newProcessKiller()
 	return monitor.New(cfg, lister, processKiller, notifyKilled)
 }
 
 func notifyKilled(name string, pid int32) {
 	msg := fmt.Sprintf("Killed %s (PID %d)", name, pid)
-	if err := notify.Send("pk", msg); err != nil {
+	if err := sendNotification("pk", msg); err != nil {
 		log.Debug("Notification failed", "error", err)
 	}
 }
@@ -74,12 +217,14 @@ func exitOnError(err error) {
 	}
 
 	log.Error("Monitor error", "error", err)
-	os.Exit(1)
+	exitProcess(1)
 }
 
 func isVersionCommand(args []string) bool {
-	if len(args) <= 1 {
+	if len(args) == 0 {
 		return false
 	}
-	return args[1] == "--version"
+	isVersionFlag := args[0] == "--version"
+	isVersionSubcommand := args[0] == "version"
+	return isVersionFlag || isVersionSubcommand
 }
