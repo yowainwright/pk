@@ -152,6 +152,49 @@ func TestReportsIncludesDescendants(t *testing.T) {
 	}
 }
 
+func TestReportsPlansKillForAgentOwnedRestartableProcess(t *testing.T) {
+	cfg := testConfig(t)
+	agent := newProcess(1, "codex")
+	child := newProcess(2, "node")
+	child.ParentPID = 1
+	child.CommandLine = "node server.js"
+	child.Cwd = "/tmp/project"
+
+	report := onlyReportFromProcesses(t, cfg, []process.Process{agent, child})
+
+	assertReport(t, report, ActionKill, ConfidenceHigh)
+	assertReasons(t, report, "restartable-command", "agent-owned")
+}
+
+func TestReportsPlansKillForSessionOwnedRestartableProcess(t *testing.T) {
+	cfg := testConfig(t)
+	shell := newProcess(1, "zsh")
+	child := newProcess(2, "python")
+	child.ParentPID = 1
+	child.CommandLine = "python -m http.server"
+	child.Cwd = "/tmp/project"
+
+	report := onlyReportFromProcesses(t, cfg, []process.Process{shell, child})
+
+	assertReport(t, report, ActionKill, ConfidenceHigh)
+	assertReasons(t, report, "restartable-command", "session-owned")
+}
+
+func TestReportsSkipsOwnershipWithoutRestartableCommand(t *testing.T) {
+	cfg := testConfig(t)
+	agent := newProcess(1, "codex")
+	child := newProcess(2, "postgres")
+	child.ParentPID = 1
+	child.CommandLine = "postgres"
+	child.Cwd = "/tmp/project"
+
+	reports := Reports(cfg, []process.Process{agent, child})
+
+	if len(reports) != 0 {
+		t.Fatalf("expected no reports, got %d", len(reports))
+	}
+}
+
 func TestReportsSkipsProtectedProcessBelowThreshold(t *testing.T) {
 	cfg := testConfig(t)
 	proc := newProcess(42, "Terminal")

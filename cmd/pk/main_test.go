@@ -12,6 +12,7 @@ import (
 
 	"github.com/jeffrywainwright/pk/internal/audit"
 	"github.com/jeffrywainwright/pk/internal/config"
+	"github.com/jeffrywainwright/pk/internal/docker"
 	"github.com/jeffrywainwright/pk/internal/killer"
 	"github.com/jeffrywainwright/pk/internal/process"
 	"github.com/jeffrywainwright/pk/internal/scan"
@@ -132,6 +133,25 @@ func TestRunCleanupApplyKillsTarget(t *testing.T) {
 	}
 	applied := true
 	assertCleanupEvent(t, deps.audit.events[0], applied)
+}
+
+func TestRunCleanupIncludesDockerTargets(t *testing.T) {
+	deps := commandDeps(t)
+	deps.docker.available = true
+	deps.docker.containers = []docker.Container{testContainer()}
+	var out bytes.Buffer
+
+	err := run([]string{"cleanup", "--apply"}, &out)
+
+	if err != nil {
+		t.Fatalf("run cleanup: %v", err)
+	}
+	if deps.docker.stoppedID != "abc123" {
+		t.Fatalf("expected stopped container, got %q", deps.docker.stoppedID)
+	}
+	if !strings.Contains(out.String(), "CONTAINER\tAPPLIED") {
+		t.Fatalf("expected container output, got %q", out.String())
+	}
 }
 
 func TestCleanupConfigParsesWatchOptions(t *testing.T) {
@@ -470,6 +490,26 @@ func (k *fakeCommandKiller) Kill(ctx context.Context, pid int32) error {
 	return nil
 }
 
+type fakeDockerClient struct {
+	available  bool
+	containers []docker.Container
+	stoppedID  string
+	err        error
+}
+
+func (c *fakeDockerClient) Available() bool {
+	return c.available
+}
+
+func (c *fakeDockerClient) List(ctx context.Context) ([]docker.Container, error) {
+	return c.containers, c.err
+}
+
+func (c *fakeDockerClient) Stop(ctx context.Context, id string) error {
+	c.stoppedID = id
+	return c.err
+}
+
 type fakeRunner struct {
 	err error
 }
@@ -504,6 +544,7 @@ type commandTestDeps struct {
 	audit               *fakeAuditStore
 	auditStoreErr       error
 	killer              *fakeCommandKiller
+	docker              *fakeDockerClient
 	runner              *fakeRunner
 	background          *fakeBackgroundManager
 	backgroundErr       error
@@ -518,6 +559,7 @@ func commandDeps(t *testing.T) *commandTestDeps {
 	deps.scanner = &fakeScanner{}
 	deps.audit = &fakeAuditStore{}
 	deps.killer = &fakeCommandKiller{}
+	deps.docker = &fakeDockerClient{}
 	deps.runner = &fakeRunner{}
 	deps.background = &fakeBackgroundManager{}
 	installCommandDeps(t, deps)
@@ -537,6 +579,7 @@ func installCommandDeps(t *testing.T, deps *commandTestDeps) {
 		return deps.audit, deps.auditStoreErr
 	}
 	newProcessKiller = func() killer.Killer { return deps.killer }
+	newDockerClient = func() docker.Client { return deps.docker }
 	newMonitorRunner = func(cfg *config.Config) monitorRunner {
 		deps.cfg = cfg
 		return deps.runner
@@ -557,6 +600,7 @@ type savedCommandDeps struct {
 	newScanner       func(*config.Config, process.Lister) processScanner
 	newAudit         func() (auditStore, error)
 	newKiller        func() killer.Killer
+	newDocker        func() docker.Client
 	newRunner        func(*config.Config) monitorRunner
 	newBackground    func() (backgroundManager, error)
 	send             func(string, string) error
@@ -571,6 +615,7 @@ func saveCommandDeps() savedCommandDeps {
 		newScanner:       newProcessScanner,
 		newAudit:         newAuditStore,
 		newKiller:        newProcessKiller,
+		newDocker:        newDockerClient,
 		newRunner:        newMonitorRunner,
 		newBackground:    newBackgroundManager,
 		send:             sendNotification,
@@ -585,6 +630,7 @@ func (d savedCommandDeps) restore() {
 	newProcessScanner = d.newScanner
 	newAuditStore = d.newAudit
 	newProcessKiller = d.newKiller
+	newDockerClient = d.newDocker
 	newMonitorRunner = d.newRunner
 	newBackgroundManager = d.newBackground
 	sendNotification = d.send
@@ -607,6 +653,17 @@ func commandReport() scan.Report {
 	report.Confidence = scan.ConfidenceHigh
 	report.Reasons = append(report.Reasons, "restartable-command", "dev-cwd")
 	return report
+}
+
+func testContainer() docker.Container {
+	return docker.Container{
+		ID:    "abc123",
+		Name:  "web",
+		Image: "node:20",
+		Labels: map[string]string{
+			"com.docker.compose.project": "app",
+		},
+	}
 }
 
 func assertCleanupEvent(t *testing.T, event audit.Event, applied bool) {

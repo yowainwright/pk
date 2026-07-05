@@ -15,12 +15,14 @@ import (
 	"github.com/jeffrywainwright/pk/internal/audit"
 	"github.com/jeffrywainwright/pk/internal/cleanup"
 	"github.com/jeffrywainwright/pk/internal/config"
+	"github.com/jeffrywainwright/pk/internal/docker"
 	"github.com/jeffrywainwright/pk/internal/killer"
 	"github.com/jeffrywainwright/pk/internal/monitor"
 	"github.com/jeffrywainwright/pk/internal/notify"
 	"github.com/jeffrywainwright/pk/internal/process"
 	"github.com/jeffrywainwright/pk/internal/scan"
 	"github.com/jeffrywainwright/pk/internal/service"
+	"github.com/jeffrywainwright/pk/internal/skillinstall"
 )
 
 var version = "dev"
@@ -44,6 +46,11 @@ type backgroundManager interface {
 	Status() (string, error)
 }
 
+type skillInstaller interface {
+	Install(string) (string, error)
+	DefaultRoot() (string, error)
+}
+
 type cleanupOptions struct {
 	apply bool
 	watch bool
@@ -54,8 +61,10 @@ var (
 	newProcessScanner    = func(cfg *config.Config, lister process.Lister) processScanner { return scan.New(cfg, lister) }
 	newAuditStore        = func() (auditStore, error) { return audit.DefaultLog() }
 	newProcessKiller     = func() killer.Killer { return killer.New() }
+	newDockerClient      = func() docker.Client { return docker.NewClient() }
 	newMonitorRunner     = func(cfg *config.Config) monitorRunner { return newMonitor(cfg) }
 	newBackgroundManager = func() (backgroundManager, error) { return service.DefaultManager() }
+	newSkillInstaller    = func() skillInstaller { return defaultSkillInstaller{} }
 	sendNotification     = notify.Send
 	handleShutdownSignal = handleSignals
 	notifySignal         = signal.Notify
@@ -99,6 +108,8 @@ func dispatch(command string, args []string, out io.Writer) error {
 		return runUninstall(out)
 	case "status":
 		return runStatus(out)
+	case "skills":
+		return runSkills(args, out)
 	default:
 		return fmt.Errorf("unknown command %q", command)
 	}
@@ -161,6 +172,43 @@ func runCleanupOnce(
 	results, err := cleanup.Run(ctx, reports, newProcessKiller(), log, options.apply)
 	if err != nil {
 		return err
+	}
+	containerResults, err := runDockerCleanup(ctx, log, options.apply)
+	if err != nil {
+		return err
+	}
+	return writeCleanupResults(out, results, containerResults)
+}
+
+func runDockerCleanup(
+	ctx context.Context,
+	log auditStore,
+	apply bool,
+) ([]docker.Result, error) {
+	client := newDockerClient()
+	if !client.Available() {
+		return nil, nil
+	}
+	return docker.Run(ctx, client, log, apply)
+}
+
+func writeCleanupResults(
+	out io.Writer,
+	results []cleanup.Result,
+	containerResults []docker.Result,
+) error {
+	if len(results) == 0 && len(containerResults) == 0 {
+		return cleanup.WriteResults(out, results)
+	}
+	if err := writeProcessCleanupResults(out, results); err != nil {
+		return err
+	}
+	return docker.WriteResults(out, containerResults)
+}
+
+func writeProcessCleanupResults(out io.Writer, results []cleanup.Result) error {
+	if len(results) == 0 {
+		return nil
 	}
 	return cleanup.WriteResults(out, results)
 }
@@ -246,6 +294,42 @@ func runStatus(out io.Writer) error {
 		return err
 	}
 	_, err = fmt.Fprintln(out, status)
+	return err
+}
+
+func runSkills(args []string, out io.Writer) error {
+	command, commandArgs := splitCommand(args)
+	switch command {
+	case "install":
+		return runSkillsInstall(commandArgs, out)
+	case "path":
+		return runSkillsPath(out)
+	default:
+		return fmt.Errorf("unknown skills command %q", command)
+	}
+}
+
+func runSkillsInstall(args []string, out io.Writer) error {
+	var root string
+	flags := flag.NewFlagSet("skills install", flag.ContinueOnError)
+	flags.StringVar(&root, "dir", "", "Skills root directory")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	path, err := newSkillInstaller().Install(root)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, path)
+	return err
+}
+
+func runSkillsPath(out io.Writer) error {
+	root, err := newSkillInstaller().DefaultRoot()
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, skillinstall.SkillPath(root))
 	return err
 }
 

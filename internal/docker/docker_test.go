@@ -1,0 +1,200 @@
+package docker
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/jeffrywainwright/pk/internal/audit"
+)
+
+func TestReportsTargetsComposeContainers(t *testing.T) {
+	container := testContainer()
+
+	reports := Reports([]Container{container})
+
+	if len(reports) != 1 {
+		t.Fatalf("expected one report, got %d", len(reports))
+	}
+	assertReason(t, reports[0], "compose-container")
+}
+
+func TestReportsTargetsDevContainers(t *testing.T) {
+	container := testContainer()
+	container.Labels = map[string]string{"devcontainer.local_folder": "/Users/me/app"}
+
+	reports := Reports([]Container{container})
+
+	if len(reports) != 1 {
+		t.Fatalf("expected one report, got %d", len(reports))
+	}
+	assertReason(t, reports[0], "devcontainer")
+	assertReason(t, reports[0], "local-workdir")
+}
+
+func TestReportsSkipsProtectedContainers(t *testing.T) {
+	container := testContainer()
+	container.Labels["pk.protected"] = "true"
+
+	reports := Reports([]Container{container})
+
+	if len(reports) != 0 {
+		t.Fatalf("expected no reports, got %d", len(reports))
+	}
+}
+
+func TestRunStopsTargetsWhenApplied(t *testing.T) {
+	client := &fakeClient{available: true, containers: []Container{testContainer()}}
+	recorder := &fakeRecorder{}
+
+	results, err := Run(context.Background(), client, recorder, true)
+
+	if err != nil {
+		t.Fatalf("run docker cleanup: %v", err)
+	}
+	if client.stoppedID != "abc123" {
+		t.Fatalf("expected stopped container, got %q", client.stoppedID)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one result, got %d", len(results))
+	}
+	assertContainerEvent(t, recorder.events[0])
+}
+
+func TestRunSkipsUnavailableDocker(t *testing.T) {
+	client := &fakeClient{}
+
+	results, err := Run(context.Background(), client, nil, true)
+
+	if err != nil {
+		t.Fatalf("run docker cleanup: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected no results, got %d", len(results))
+	}
+}
+
+func TestCLIClientParsesDockerOutput(t *testing.T) {
+	runner := &fakeRunner{available: true, output: dockerOutput()}
+	client := NewClientWithRunner(runner)
+
+	containers, err := client.List(context.Background())
+
+	if err != nil {
+		t.Fatalf("list containers: %v", err)
+	}
+	if containers[0].Labels["com.docker.compose.project"] != "app" {
+		t.Fatalf("expected compose label, got %#v", containers[0].Labels)
+	}
+}
+
+func TestCLIClientWrapsStopErrors(t *testing.T) {
+	runner := &fakeRunner{available: true, err: errors.New("denied")}
+	client := NewClientWithRunner(runner)
+
+	err := client.Stop(context.Background(), "abc123")
+
+	if err == nil {
+		t.Fatal("expected stop error")
+	}
+}
+
+func TestWriteResultsWritesContainerRows(t *testing.T) {
+	var out bytes.Buffer
+	result := Result{Report: Report{Container: testContainer()}, Applied: true}
+
+	if err := WriteResults(&out, []Result{result}); err != nil {
+		t.Fatalf("write results: %v", err)
+	}
+	if !strings.Contains(out.String(), "CONTAINER\tAPPLIED") {
+		t.Fatalf("expected header, got %q", out.String())
+	}
+}
+
+type fakeClient struct {
+	available  bool
+	containers []Container
+	stoppedID  string
+	err        error
+}
+
+func (c *fakeClient) Available() bool {
+	return c.available
+}
+
+func (c *fakeClient) List(ctx context.Context) ([]Container, error) {
+	return c.containers, c.err
+}
+
+func (c *fakeClient) Stop(ctx context.Context, id string) error {
+	c.stoppedID = id
+	return c.err
+}
+
+type fakeRecorder struct {
+	events []audit.Event
+}
+
+func (r *fakeRecorder) Record(event audit.Event) error {
+	r.events = append(r.events, event)
+	return nil
+}
+
+type fakeRunner struct {
+	available bool
+	output    []byte
+	err       error
+}
+
+func (r *fakeRunner) LookPath(name string) (string, error) {
+	if r.available {
+		return "/usr/bin/docker", nil
+	}
+	return "", errors.New("missing")
+}
+
+func (r *fakeRunner) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return r.output, r.err
+}
+
+func (r *fakeRunner) Run(ctx context.Context, name string, args ...string) error {
+	return r.err
+}
+
+func testContainer() Container {
+	return Container{
+		ID:      "abc123",
+		Name:    "web",
+		Image:   "node:20",
+		Command: "node server.js",
+		Labels: map[string]string{
+			"com.docker.compose.project": "app",
+		},
+	}
+}
+
+func dockerOutput() []byte {
+	return []byte(`{"ID":"abc123","Image":"node:20","Names":"web","Command":"node server.js","Labels":"com.docker.compose.project=app"}` + "\n")
+}
+
+func assertReason(t *testing.T, report Report, reason string) {
+	t.Helper()
+	for _, current := range report.Reasons {
+		if current == reason {
+			return
+		}
+	}
+	t.Fatalf("expected reason %q in %#v", reason, report.Reasons)
+}
+
+func assertContainerEvent(t *testing.T, event audit.Event) {
+	t.Helper()
+	if event.TargetType != "container" {
+		t.Fatalf("expected container event, got %q", event.TargetType)
+	}
+	if event.ContainerID != "abc123" {
+		t.Fatalf("expected container id, got %q", event.ContainerID)
+	}
+}

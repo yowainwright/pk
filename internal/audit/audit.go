@@ -20,9 +20,12 @@ type Event struct {
 	Time        time.Time `json:"time"`
 	Command     string    `json:"command"`
 	Action      string    `json:"action"`
+	TargetType  string    `json:"target_type,omitempty"`
 	Applied     bool      `json:"applied"`
 	PID         int32     `json:"pid,omitempty"`
 	Name        string    `json:"name,omitempty"`
+	ContainerID string    `json:"container_id,omitempty"`
+	Image       string    `json:"image,omitempty"`
 	CommandLine string    `json:"command_line,omitempty"`
 	Cwd         string    `json:"cwd,omitempty"`
 	Reasons     []string  `json:"reasons,omitempty"`

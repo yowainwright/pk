@@ -82,7 +82,7 @@ func reportForProcess(
 	proc process.Process,
 	procs []process.Process,
 ) (Report, bool) {
-	reasons := reasonsForProcess(cfg, proc)
+	reasons := reasonsForProcess(cfg, proc, procs)
 	if len(reasons) == 0 {
 		return Report{}, false
 	}
@@ -173,12 +173,16 @@ func confidenceForReasons(reasons []string) Confidence {
 	return ConfidenceLow
 }
 
-func reasonsForProcess(cfg *config.Config, proc process.Process) []string {
+func reasonsForProcess(
+	cfg *config.Config,
+	proc process.Process,
+	procs []process.Process,
+) []string {
 	if cfg.IsProtected(proc.Name) {
 		return protectedReasons(cfg, proc)
 	}
 
-	reasons := cleanupReasons(cfg, proc)
+	reasons := cleanupReasons(cfg, proc, procs)
 	if len(reasons) == 0 {
 		return nil
 	}
@@ -186,8 +190,13 @@ func reasonsForProcess(cfg *config.Config, proc process.Process) []string {
 	return reasons
 }
 
-func cleanupReasons(cfg *config.Config, proc process.Process) []string {
+func cleanupReasons(
+	cfg *config.Config,
+	proc process.Process,
+	procs []process.Process,
+) []string {
 	reasons := commandReasons(proc)
+	reasons = append(reasons, ownershipReasons(proc, procs)...)
 	reasons = append(reasons, locationReasons(proc)...)
 	reasons = append(reasons, thresholdReasons(cfg, proc)...)
 	if hasOnlyLocationReason(reasons) {
@@ -196,7 +205,23 @@ func cleanupReasons(cfg *config.Config, proc process.Process) []string {
 	if hasOnlyCommandReason(reasons) {
 		return nil
 	}
+	if hasOnlyOwnershipReason(reasons) {
+		return nil
+	}
 	return reasons
+}
+
+func ownershipReasons(proc process.Process, procs []process.Process) []string {
+	if hasAncestor(proc, procs, isAgentProcess) {
+		return []string{"agent-owned"}
+	}
+	if proc.Cwd == "" {
+		return nil
+	}
+	if hasAncestor(proc, procs, isSessionRoot) {
+		return []string{"session-owned"}
+	}
+	return nil
 }
 
 func hasOnlyLocationReason(reasons []string) bool {
@@ -211,10 +236,17 @@ func hasOnlyCommandReason(reasons []string) bool {
 	return hasOneReason && hasCommand
 }
 
+func hasOnlyOwnershipReason(reasons []string) bool {
+	hasOneReason := len(reasons) == 1
+	hasOwnership := hasReason(reasons, "agent-owned") || hasReason(reasons, "session-owned")
+	return hasOneReason && hasOwnership
+}
+
 func hasHighConfidenceReasons(reasons []string) bool {
 	hasCommand := hasReason(reasons, "restartable-command")
 	hasLocation := hasReason(reasons, "dev-cwd")
-	hasRequiredReasons := hasCommand && hasLocation
+	hasOwnership := hasReason(reasons, "agent-owned") || hasReason(reasons, "session-owned")
+	hasRequiredReasons := hasCommand && (hasLocation || hasOwnership)
 	return hasRequiredReasons
 }
 
@@ -249,8 +281,53 @@ func isRestartableCommand(name string, command string) bool {
 	return matchesAnyCommand(name, command, commands)
 }
 
+func isAgentProcess(proc process.Process) bool {
+	commands := []string{"codex", "claude", "aider", "opencode", "goose"}
+	return matchesAnyCommand(proc.Name, proc.CommandLine, commands)
+}
+
+func isSessionRoot(proc process.Process) bool {
+	commands := []string{
+		"terminal", "iterm2", "ghostty", "code", "cursor", "zed",
+		"tmux", "bash", "zsh", "fish", "codex", "claude",
+	}
+	return matchesAnyCommand(proc.Name, proc.CommandLine, commands)
+}
+
+func hasAncestor(
+	proc process.Process,
+	procs []process.Process,
+	matches func(process.Process) bool,
+) bool {
+	byPID := processesByPID(procs)
+	seen := map[int32]bool{proc.PID: true}
+	parentPID := proc.ParentPID
+	for parentPID != 0 {
+		ancestor, ok := byPID[parentPID]
+		if !ok || seen[parentPID] {
+			return false
+		}
+		if matches(ancestor) {
+			return true
+		}
+		seen[parentPID] = true
+		parentPID = ancestor.ParentPID
+	}
+	return false
+}
+
+func processesByPID(procs []process.Process) map[int32]process.Process {
+	byPID := make(map[int32]process.Process, len(procs))
+	for _, proc := range procs {
+		byPID[proc.PID] = proc
+	}
+	return byPID
+}
+
 func matchesAnyCommand(name string, command string, commands []string) bool {
-	tokens := commandTokens(command)
+	name = strings.ToLower(name)
+	command = strings.ToLower(command)
+	tokens := commandTokens(name + " " + command)
 	for _, current := range commands {
 		if name == current {
 			return true
