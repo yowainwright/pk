@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeffrywainwright/pk/internal/config"
-	"github.com/jeffrywainwright/pk/internal/process"
+	"github.com/yowainwright/pk/internal/config"
+	"github.com/yowainwright/pk/internal/process"
 )
 
 func TestCheckRecordsOffenseBeforeGracePeriod(t *testing.T) {

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeffrywainwright/pk/internal/config"
-	"github.com/jeffrywainwright/pk/internal/process"
+	"github.com/yowainwright/pk/internal/config"
+	"github.com/yowainwright/pk/internal/process"
 )
 
 func TestReportsPlansKillForRestartableDevProcessOverThreshold(t *testing.T) {

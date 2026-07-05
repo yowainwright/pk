@@ -6,10 +6,10 @@ import (
 	"io"
 	"strings"
 
-	"github.com/jeffrywainwright/pk/internal/audit"
-	"github.com/jeffrywainwright/pk/internal/process"
-	"github.com/jeffrywainwright/pk/internal/processtree"
-	"github.com/jeffrywainwright/pk/internal/scan"
+	"github.com/yowainwright/pk/internal/audit"
+	"github.com/yowainwright/pk/internal/process"
+	"github.com/yowainwright/pk/internal/processtree"
+	"github.com/yowainwright/pk/internal/scan"
 )
 
 type Killer interface {

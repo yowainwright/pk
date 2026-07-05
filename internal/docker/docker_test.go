@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeffrywainwright/pk/internal/audit"
+	"github.com/yowainwright/pk/internal/audit"
 )
 
 func TestReportsTargetsComposeContainers(t *testing.T) {

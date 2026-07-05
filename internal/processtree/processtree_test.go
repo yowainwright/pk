@@ -3,7 +3,7 @@ package processtree
 import (
 	"testing"
 
-	"github.com/jeffrywainwright/pk/internal/process"
+	"github.com/yowainwright/pk/internal/process"
 )
 
 func TestDescendantsReturnsNestedChildren(t *testing.T) {

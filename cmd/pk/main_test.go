@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeffrywainwright/pk/internal/audit"
-	"github.com/jeffrywainwright/pk/internal/config"
-	"github.com/jeffrywainwright/pk/internal/docker"
-	"github.com/jeffrywainwright/pk/internal/killer"
-	"github.com/jeffrywainwright/pk/internal/process"
-	"github.com/jeffrywainwright/pk/internal/scan"
+	"github.com/yowainwright/pk/internal/audit"
+	"github.com/yowainwright/pk/internal/config"
+	"github.com/yowainwright/pk/internal/docker"
+	"github.com/yowainwright/pk/internal/killer"
+	"github.com/yowainwright/pk/internal/process"
+	"github.com/yowainwright/pk/internal/scan"
 )
 
 func TestRunPrintsVersion(t *testing.T) {

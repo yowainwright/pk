@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeffrywainwright/pk/internal/audit"
-	"github.com/jeffrywainwright/pk/internal/process"
-	"github.com/jeffrywainwright/pk/internal/scan"
+	"github.com/yowainwright/pk/internal/audit"
+	"github.com/yowainwright/pk/internal/process"
+	"github.com/yowainwright/pk/internal/scan"
 )
 
 func TestRunDryRunRecordsWithoutKilling(t *testing.T) {

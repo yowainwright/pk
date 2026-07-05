@@ -8,9 +8,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jeffrywainwright/pk/internal/config"
-	"github.com/jeffrywainwright/pk/internal/process"
-	"github.com/jeffrywainwright/pk/internal/processtree"
+	"github.com/yowainwright/pk/internal/config"
+	"github.com/yowainwright/pk/internal/process"
+	"github.com/yowainwright/pk/internal/processtree"
 )
 
 type Action string

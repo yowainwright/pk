@@ -1,4 +1,4 @@
-module github.com/jeffrywainwright/pk
+module github.com/yowainwright/pk
 
 go 1.26
 

@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jeffrywainwright/pk/skills"
+	"github.com/yowainwright/pk/skills"
 )
 
 const skillName = "pk"

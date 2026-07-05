@@ -3,7 +3,7 @@ package processtree
 import (
 	"sort"
 
-	"github.com/jeffrywainwright/pk/internal/process"
+	"github.com/yowainwright/pk/internal/process"
 )
 
 func Descendants(procs []process.Process, rootPID int32) []process.Process {
