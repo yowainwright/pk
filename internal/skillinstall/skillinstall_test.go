@@ -10,7 +10,6 @@ func TestInstallWritesSkillFile(t *testing.T) {
 	root := t.TempDir()
 
 	path, err := Install(root)
-
 	if err != nil {
 		t.Fatalf("install skill: %v", err)
 	}
@@ -27,7 +26,6 @@ func TestDefaultRootUsesOverride(t *testing.T) {
 	t.Setenv("PK_SKILLS_DIR", "/tmp/pk-skills")
 
 	root, err := DefaultRoot()
-
 	if err != nil {
 		t.Fatalf("default root: %v", err)
 	}
@@ -41,7 +39,6 @@ func TestDefaultRootUsesCodexHome(t *testing.T) {
 	t.Setenv("CODEX_HOME", "/tmp/codex")
 
 	root, err := DefaultRoot()
-
 	if err != nil {
 		t.Fatalf("default root: %v", err)
 	}

@@ -142,7 +142,6 @@ func TestRunCleanupIncludesDockerTargets(t *testing.T) {
 	var out bytes.Buffer
 
 	err := run([]string{"cleanup", "--apply"}, &out)
-
 	if err != nil {
 		t.Fatalf("run cleanup: %v", err)
 	}
@@ -287,6 +286,47 @@ func TestRunStatusReturnsStatusErrors(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected status error")
+	}
+}
+
+func TestRunSkillsInstallWritesSkill(t *testing.T) {
+	deps := commandDeps(t)
+	var out bytes.Buffer
+
+	err := run([]string{"skills", "install", "-dir", "/tmp/skills"}, &out)
+	if err != nil {
+		t.Fatalf("run skills install: %v", err)
+	}
+	if deps.skills.root != "/tmp/skills" {
+		t.Fatalf("expected skills root, got %q", deps.skills.root)
+	}
+	if out.String() != "/tmp/skills/pk/SKILL.md\n" {
+		t.Fatalf("unexpected output %q", out.String())
+	}
+}
+
+func TestRunSkillsPathPrintsDefaultPath(t *testing.T) {
+	deps := commandDeps(t)
+	deps.skills.defaultRoot = "/tmp/default-skills"
+	var out bytes.Buffer
+
+	err := run([]string{"skills", "path"}, &out)
+	if err != nil {
+		t.Fatalf("run skills path: %v", err)
+	}
+	if out.String() != "/tmp/default-skills/pk/SKILL.md\n" {
+		t.Fatalf("unexpected output %q", out.String())
+	}
+}
+
+func TestRunSkillsRejectsUnknownCommands(t *testing.T) {
+	commandDeps(t)
+	var out bytes.Buffer
+
+	err := run([]string{"skills", "missing"}, &out)
+
+	if err == nil {
+		t.Fatal("expected skills command error")
 	}
 }
 
@@ -539,6 +579,21 @@ func (m *fakeBackgroundManager) Status() (string, error) {
 	return m.status, m.err
 }
 
+type fakeSkillInstaller struct {
+	root        string
+	defaultRoot string
+	err         error
+}
+
+func (i *fakeSkillInstaller) Install(root string) (string, error) {
+	i.root = root
+	return root + "/pk/SKILL.md", i.err
+}
+
+func (i *fakeSkillInstaller) DefaultRoot() (string, error) {
+	return i.defaultRoot, i.err
+}
+
 type commandTestDeps struct {
 	scanner             *fakeScanner
 	audit               *fakeAuditStore
@@ -548,6 +603,7 @@ type commandTestDeps struct {
 	runner              *fakeRunner
 	background          *fakeBackgroundManager
 	backgroundErr       error
+	skills              *fakeSkillInstaller
 	cfg                 *config.Config
 	notificationTitle   string
 	notificationMessage string
@@ -562,6 +618,7 @@ func commandDeps(t *testing.T) *commandTestDeps {
 	deps.docker = &fakeDockerClient{}
 	deps.runner = &fakeRunner{}
 	deps.background = &fakeBackgroundManager{}
+	deps.skills = &fakeSkillInstaller{defaultRoot: "/tmp/skills"}
 	installCommandDeps(t, deps)
 	return deps
 }
@@ -587,6 +644,9 @@ func installCommandDeps(t *testing.T, deps *commandTestDeps) {
 	newBackgroundManager = func() (backgroundManager, error) {
 		return deps.background, deps.backgroundErr
 	}
+	newSkillInstaller = func() skillInstaller {
+		return deps.skills
+	}
 	sendNotification = func(title string, message string) error {
 		deps.notificationTitle = title
 		deps.notificationMessage = message
@@ -603,6 +663,7 @@ type savedCommandDeps struct {
 	newDocker        func() docker.Client
 	newRunner        func(*config.Config) monitorRunner
 	newBackground    func() (backgroundManager, error)
+	newSkills        func() skillInstaller
 	send             func(string, string) error
 	handleSignalFunc func(context.CancelFunc)
 	notifySignalFunc func(chan<- os.Signal, ...os.Signal)
@@ -618,6 +679,7 @@ func saveCommandDeps() savedCommandDeps {
 		newDocker:        newDockerClient,
 		newRunner:        newMonitorRunner,
 		newBackground:    newBackgroundManager,
+		newSkills:        newSkillInstaller,
 		send:             sendNotification,
 		handleSignalFunc: handleShutdownSignal,
 		notifySignalFunc: notifySignal,
@@ -633,6 +695,7 @@ func (d savedCommandDeps) restore() {
 	newDockerClient = d.newDocker
 	newMonitorRunner = d.newRunner
 	newBackgroundManager = d.newBackground
+	newSkillInstaller = d.newSkills
 	sendNotification = d.send
 	handleShutdownSignal = d.handleSignalFunc
 	notifySignal = d.notifySignalFunc

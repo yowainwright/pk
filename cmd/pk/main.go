@@ -423,3 +423,13 @@ func isVersionCommand(args []string) bool {
 	isVersionSubcommand := args[0] == "version"
 	return isVersionFlag || isVersionSubcommand
 }
+
+type defaultSkillInstaller struct{}
+
+func (i defaultSkillInstaller) Install(root string) (string, error) {
+	return skillinstall.Install(root)
+}
+
+func (i defaultSkillInstaller) DefaultRoot() (string, error) {
+	return skillinstall.DefaultRoot()
+}

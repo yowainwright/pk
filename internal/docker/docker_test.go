@@ -50,7 +50,6 @@ func TestRunStopsTargetsWhenApplied(t *testing.T) {
 	recorder := &fakeRecorder{}
 
 	results, err := Run(context.Background(), client, recorder, true)
-
 	if err != nil {
 		t.Fatalf("run docker cleanup: %v", err)
 	}
@@ -67,7 +66,6 @@ func TestRunSkipsUnavailableDocker(t *testing.T) {
 	client := &fakeClient{}
 
 	results, err := Run(context.Background(), client, nil, true)
-
 	if err != nil {
 		t.Fatalf("run docker cleanup: %v", err)
 	}
@@ -81,7 +79,6 @@ func TestCLIClientParsesDockerOutput(t *testing.T) {
 	client := NewClientWithRunner(runner)
 
 	containers, err := client.List(context.Background())
-
 	if err != nil {
 		t.Fatalf("list containers: %v", err)
 	}
@@ -176,7 +173,9 @@ func testContainer() Container {
 }
 
 func dockerOutput() []byte {
-	return []byte(`{"ID":"abc123","Image":"node:20","Names":"web","Command":"node server.js","Labels":"com.docker.compose.project=app"}` + "\n")
+	return []byte(
+		`{"ID":"abc123","Image":"node:20","Names":"web","Command":"node server.js","Labels":"com.docker.compose.project=app"}` + "\n",
+	)
 }
 
 func assertReason(t *testing.T, report Report, reason string) {
