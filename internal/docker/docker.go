@@ -2,7 +2,9 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/jeffrywainwright/pk/internal/audit"
@@ -106,7 +108,23 @@ func IsDaemonUnavailable(err error) bool {
 	if err == nil {
 		return false
 	}
-	message := strings.ToLower(err.Error())
+	message := dockerErrorMessage(err)
+	return hasDaemonUnavailableMessage(message)
+}
+
+func dockerErrorMessage(err error) string {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		stderr := strings.TrimSpace(string(exitErr.Stderr))
+		if stderr != "" {
+			return stderr
+		}
+	}
+	return err.Error()
+}
+
+func hasDaemonUnavailableMessage(message string) bool {
+	message = strings.ToLower(message)
 	cannotConnect := strings.Contains(message, "cannot connect to the docker daemon")
 	daemonPrompt := strings.Contains(message, "is the docker daemon running")
 	daemonStopped := strings.Contains(message, "docker daemon is not running")

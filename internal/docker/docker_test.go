@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -134,6 +137,16 @@ func TestIsDaemonUnavailableMatchesDockerDaemonErrors(t *testing.T) {
 	err := errors.New(message)
 
 	if !IsDaemonUnavailable(err) {
+		t.Fatal("expected daemon unavailable error")
+	}
+}
+
+func TestIsDaemonUnavailableMatchesDockerStderr(t *testing.T) {
+	message := "Cannot connect to the Docker daemon. Is the docker daemon running?"
+	err := stderrExitError(t, message)
+	wrapped := fmt.Errorf("listing docker containers: %w", err)
+
+	if !IsDaemonUnavailable(wrapped) {
 		t.Fatal("expected daemon unavailable error")
 	}
 }
@@ -295,6 +308,18 @@ func (r *fakeRunner) Output(ctx context.Context, name string, args ...string) ([
 
 func (r *fakeRunner) Run(ctx context.Context, name string, args ...string) error {
 	return r.err
+}
+
+func stderrExitError(t *testing.T, message string) error {
+	t.Helper()
+	script := "printf '%s' \"$PK_DOCKER_ERR\" >&2; exit 1"
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Env = append(os.Environ(), "PK_DOCKER_ERR="+message)
+	_, err := cmd.Output()
+	if err == nil {
+		t.Fatal("expected command error")
+	}
+	return err
 }
 
 func testContainer() Container {
