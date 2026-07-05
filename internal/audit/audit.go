@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -124,10 +125,46 @@ func (l *Log) write(events []Event) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(l.path, data, 0o644); err != nil {
+	if err := writeAtomicFile(l.path, data, 0o644); err != nil {
 		return fmt.Errorf("writing audit log: %w", err)
 	}
 	return nil
+}
+
+func writeAtomicFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	file, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tempPath := file.Name()
+	defer func() {
+		_ = os.Remove(tempPath)
+	}()
+	if err := writeTempFile(file, data, perm); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
+}
+
+func writeTempFile(file *os.File, data []byte, perm os.FileMode) error {
+	if _, err := file.Write(data); err != nil {
+		return closeAfterError(file, err)
+	}
+	if err := file.Chmod(perm); err != nil {
+		return closeAfterError(file, err)
+	}
+	if err := file.Sync(); err != nil {
+		return closeAfterError(file, err)
+	}
+	return file.Close()
+}
+
+func closeAfterError(file *os.File, err error) error {
+	if closeErr := file.Close(); closeErr != nil {
+		return errors.Join(err, closeErr)
+	}
+	return err
 }
 
 func readEvents(r io.Reader) ([]Event, error) {

@@ -81,6 +81,25 @@ func TestWriteEventsWritesJSONLines(t *testing.T) {
 	}
 }
 
+func TestWriteAtomicFileReplacesFileAndRemovesTemp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.jsonl")
+	writeTestFile(t, path, []byte("old\n"))
+
+	err := writeAtomicFile(path, []byte("new\n"), 0o644)
+	if err != nil {
+		t.Fatalf("write atomic file: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	if string(data) != "new\n" {
+		t.Fatalf("expected replacement content, got %q", string(data))
+	}
+	assertNoAuditTempFiles(t, dir)
+}
+
 func TestRecordAddsTimestamp(t *testing.T) {
 	now := testTime()
 	log := New(filepath.Join(t.TempDir(), "events.jsonl"))
@@ -224,5 +243,16 @@ func writeTestFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write test file: %v", err)
+	}
+}
+
+func assertNoAuditTempFiles(t *testing.T, dir string) {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, ".events.jsonl.*.tmp"))
+	if err != nil {
+		t.Fatalf("find audit temp files: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected no audit temp files, got %v", matches)
 	}
 }
