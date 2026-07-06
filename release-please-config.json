@@ -1,0 +1,11 @@
+{
+  "include-component-in-tag": false,
+  "skip-github-release": true,
+  "packages": {
+    ".": {
+      "release-type": "go",
+      "package-name": "pk",
+      "pull-request-title-pattern": "chore: release ${version}"
+    }
+  }
+}
