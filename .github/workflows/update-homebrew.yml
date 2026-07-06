@@ -19,14 +19,16 @@ jobs:
         run: |
           VERSION="${{ github.event.release.tag_name }}"
           VERSION="${VERSION#v}"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          {
+            echo "version=$VERSION"
+            echo "tag=${{ github.event.release.tag_name }}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Download release assets and calculate SHA256
         id: checksums
         run: |
           VERSION="${{ steps.release.outputs.tag }}"
-          REPO="jeffrywainwright/pk"
+          REPO="yowainwright/pk"
 
           curl -L -o pk-darwin-arm64 "https://github.com/$REPO/releases/download/$VERSION/pk-darwin-arm64"
           SHA_DARWIN_ARM64=$(sha256sum pk-darwin-arm64 | cut -d' ' -f1)
@@ -40,10 +42,12 @@ jobs:
           curl -L -o pk-linux-amd64 "https://github.com/$REPO/releases/download/$VERSION/pk-linux-amd64"
           SHA_LINUX_AMD64=$(sha256sum pk-linux-amd64 | cut -d' ' -f1)
 
-          echo "sha_darwin_arm64=$SHA_DARWIN_ARM64" >> $GITHUB_OUTPUT
-          echo "sha_darwin_amd64=$SHA_DARWIN_AMD64" >> $GITHUB_OUTPUT
-          echo "sha_linux_arm64=$SHA_LINUX_ARM64" >> $GITHUB_OUTPUT
-          echo "sha_linux_amd64=$SHA_LINUX_AMD64" >> $GITHUB_OUTPUT
+          {
+            echo "sha_darwin_arm64=$SHA_DARWIN_ARM64"
+            echo "sha_darwin_amd64=$SHA_DARWIN_AMD64"
+            echo "sha_linux_arm64=$SHA_LINUX_ARM64"
+            echo "sha_linux_amd64=$SHA_LINUX_AMD64"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Update formula
         run: |
@@ -51,26 +55,26 @@ jobs:
           cat > Formula/pk.rb << 'FORMULA'
           class Pk < Formula
             desc "Process killer - automatically terminate runaway processes on macOS"
-            homepage "https://github.com/jeffrywainwright/pk"
+            homepage "https://github.com/yowainwright/pk"
             version "${{ steps.release.outputs.version }}"
             license "MIT"
 
             on_macos do
               if Hardware::CPU.arm?
-                url "https://github.com/jeffrywainwright/pk/releases/download/${{ steps.release.outputs.tag }}/pk-darwin-arm64"
+                url "https://github.com/yowainwright/pk/releases/download/${{ steps.release.outputs.tag }}/pk-darwin-arm64"
                 sha256 "${{ steps.checksums.outputs.sha_darwin_arm64 }}"
               else
-                url "https://github.com/jeffrywainwright/pk/releases/download/${{ steps.release.outputs.tag }}/pk-darwin-amd64"
+                url "https://github.com/yowainwright/pk/releases/download/${{ steps.release.outputs.tag }}/pk-darwin-amd64"
                 sha256 "${{ steps.checksums.outputs.sha_darwin_amd64 }}"
               end
             end
 
             on_linux do
               if Hardware::CPU.arm?
-                url "https://github.com/jeffrywainwright/pk/releases/download/${{ steps.release.outputs.tag }}/pk-linux-arm64"
+                url "https://github.com/yowainwright/pk/releases/download/${{ steps.release.outputs.tag }}/pk-linux-arm64"
                 sha256 "${{ steps.checksums.outputs.sha_linux_arm64 }}"
               else
-                url "https://github.com/jeffrywainwright/pk/releases/download/${{ steps.release.outputs.tag }}/pk-linux-amd64"
+                url "https://github.com/yowainwright/pk/releases/download/${{ steps.release.outputs.tag }}/pk-linux-amd64"
                 sha256 "${{ steps.checksums.outputs.sha_linux_amd64 }}"
               end
             end
