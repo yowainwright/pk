@@ -12,7 +12,6 @@ type Config struct {
 	MemoryThreshold uint64
 	Interval        time.Duration
 	GracePeriod     time.Duration
-	DryRun          bool
 	Protected       []string
 }
 
@@ -42,8 +41,6 @@ var defaultProtected = []string{
 	"claude",
 	"pk",
 }
-
-const defaultDryRun = false
 
 func ParseArgs(name string, args []string) (*Config, error) {
 	return ParseArgsWith(name, args, nil)
@@ -95,7 +92,6 @@ func registerFlags(flags *flag.FlagSet, cfg *Config) *string {
 	flags.Uint64Var(&cfg.MemoryThreshold, "mem", 8192, "Memory threshold in MB")
 	flags.DurationVar(&cfg.Interval, "interval", 3*time.Second, "Check interval")
 	flags.DurationVar(&cfg.GracePeriod, "grace", 30*time.Second, "Grace period before kill")
-	flags.BoolVar(&cfg.DryRun, "dry-run", defaultDryRun, "Log actions without killing")
 	flags.StringVar(&protectedStr, "protected", "", "Comma-separated process names to protect")
 	return &protectedStr
 }

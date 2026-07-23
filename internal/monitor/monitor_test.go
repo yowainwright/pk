@@ -10,6 +10,11 @@ import (
 	"github.com/yowainwright/pk/internal/process"
 )
 
+const (
+	previewMode = false
+	applyMode   = true
+)
+
 func TestCheckRecordsOffenseBeforeGracePeriod(t *testing.T) {
 	monitor := testMonitor(applyConfig())
 	monitor.lister = &fakeLister{procs: processes(overCPUProcess())}
@@ -102,11 +107,11 @@ func TestRunStopsWhenContextIsCanceled(t *testing.T) {
 	}
 }
 
-func TestCheckDryRunDoesNotKill(t *testing.T) {
-	cfg := dryRunConfig()
+func TestCheckPreviewDoesNotKill(t *testing.T) {
+	cfg := applyConfig()
 	cfg.GracePeriod = 0
 	killer := &fakeKiller{}
-	monitor := testMonitorWithKiller(cfg, killer)
+	monitor := New(cfg, &fakeLister{}, killer, nil, previewMode)
 	monitor.lister = &fakeLister{procs: processes(overCPUProcess())}
 
 	monitor.check(context.Background())
@@ -124,7 +129,7 @@ func TestCheckNotifiesAfterKill(t *testing.T) {
 	notified := false
 	monitor := New(cfg, &fakeLister{}, killer, func(string, int32) {
 		notified = true
-	})
+	}, applyMode)
 	monitor.lister = &fakeLister{procs: processes(overCPUProcess())}
 
 	monitor.check(context.Background())
@@ -142,7 +147,7 @@ func TestCheckDoesNotNotifyWhenKillFails(t *testing.T) {
 	notified := false
 	monitor := New(cfg, &fakeLister{}, killer, func(string, int32) {
 		notified = true
-	})
+	}, applyMode)
 	monitor.lister = &fakeLister{procs: processes(overCPUProcess())}
 
 	monitor.check(context.Background())
@@ -268,19 +273,11 @@ func testMonitor(cfg *config.Config) *Monitor {
 }
 
 func testMonitorWithKiller(cfg *config.Config, killer *fakeKiller) *Monitor {
-	return New(cfg, &fakeLister{}, killer, nil)
+	return New(cfg, &fakeLister{}, killer, nil, applyMode)
 }
 
 func applyConfig() *config.Config {
-	cfg := baseConfig()
-	cfg.DryRun = false
-	return cfg
-}
-
-func dryRunConfig() *config.Config {
-	cfg := baseConfig()
-	cfg.DryRun = true
-	return cfg
+	return baseConfig()
 }
 
 func baseConfig() *config.Config {

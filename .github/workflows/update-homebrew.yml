@@ -1,8 +1,21 @@
 name: Update Homebrew Formula
 
 on:
-  release:
-    types: [published]
+  workflow_call:
+    inputs:
+      tag_name:
+        description: GitHub release tag containing pk binaries
+        required: true
+        type: string
+    secrets:
+      HOMEBREW_TAP_TOKEN:
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: GitHub release tag containing pk binaries
+        required: true
+        type: string
 
 jobs:
   update-formula:
@@ -16,12 +29,14 @@ jobs:
 
       - name: Get release info
         id: release
+        env:
+          TAG: ${{ inputs.tag_name }}
         run: |
-          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="$TAG"
           VERSION="${VERSION#v}"
           {
             echo "version=$VERSION"
-            echo "tag=${{ github.event.release.tag_name }}"
+            echo "tag=$TAG"
           } >> "$GITHUB_OUTPUT"
 
       - name: Download release assets and calculate SHA256
@@ -30,16 +45,16 @@ jobs:
           VERSION="${{ steps.release.outputs.tag }}"
           REPO="yowainwright/pk"
 
-          curl -L -o pk-darwin-arm64 "https://github.com/$REPO/releases/download/$VERSION/pk-darwin-arm64"
+          curl --fail --location --show-error --silent -o pk-darwin-arm64 "https://github.com/$REPO/releases/download/$VERSION/pk-darwin-arm64"
           SHA_DARWIN_ARM64=$(sha256sum pk-darwin-arm64 | cut -d' ' -f1)
 
-          curl -L -o pk-darwin-amd64 "https://github.com/$REPO/releases/download/$VERSION/pk-darwin-amd64"
+          curl --fail --location --show-error --silent -o pk-darwin-amd64 "https://github.com/$REPO/releases/download/$VERSION/pk-darwin-amd64"
           SHA_DARWIN_AMD64=$(sha256sum pk-darwin-amd64 | cut -d' ' -f1)
 
-          curl -L -o pk-linux-arm64 "https://github.com/$REPO/releases/download/$VERSION/pk-linux-arm64"
+          curl --fail --location --show-error --silent -o pk-linux-arm64 "https://github.com/$REPO/releases/download/$VERSION/pk-linux-arm64"
           SHA_LINUX_ARM64=$(sha256sum pk-linux-arm64 | cut -d' ' -f1)
 
-          curl -L -o pk-linux-amd64 "https://github.com/$REPO/releases/download/$VERSION/pk-linux-amd64"
+          curl --fail --location --show-error --silent -o pk-linux-amd64 "https://github.com/$REPO/releases/download/$VERSION/pk-linux-amd64"
           SHA_LINUX_AMD64=$(sha256sum pk-linux-amd64 | cut -d' ' -f1)
 
           {
@@ -54,7 +69,7 @@ jobs:
           mkdir -p Formula
           cat > Formula/pk.rb << 'FORMULA'
           class Pk < Formula
-            desc "Process killer - automatically terminate runaway processes on macOS"
+            desc "Safe-by-default local development process cleanup"
             homepage "https://github.com/yowainwright/pk"
             version "${{ steps.release.outputs.version }}"
             license "MIT"
@@ -94,5 +109,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/pk.rb
-          git commit -m "Update pk to ${{ steps.release.outputs.version }}" || exit 0
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Update pk to ${{ steps.release.outputs.version }}"
           git push

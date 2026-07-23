@@ -1,6 +1,20 @@
 # pk
 
-Local process cleanup for agent and development work.
+Safe-by-default local process cleanup CLI for agent and development work.
+
+## Installation
+
+Install the latest release with Homebrew:
+
+```sh
+brew install yowainwright/tap/pk
+```
+
+Or install with Go 1.26 or newer:
+
+```sh
+go install github.com/yowainwright/pk/cmd/pk@latest
+```
 
 ## Usage
 
@@ -30,6 +44,13 @@ Run cleanup continuously on the configured interval:
 pk cleanup --apply --watch
 ```
 
+Limit cleanup to processes or containers:
+
+```sh
+pk cleanup --scope processes
+pk cleanup --scope containers
+```
+
 Show cleanup audit events:
 
 ```sh
@@ -48,10 +69,10 @@ Print where the skill will be installed:
 pk skills path
 ```
 
-Install background cleanup for the current user:
+Install active background cleanup for the current user:
 
 ```sh
-pk install
+pk install --apply
 ```
 
 Check or remove background cleanup:
@@ -67,8 +88,12 @@ Run the existing threshold monitor:
 pk monitor
 ```
 
-The monitor terminates matching processes by default. Use `-dry-run` when you
-want to observe without killing.
+The monitor previews matching processes by default. Apply threshold-based
+termination explicitly:
+
+```sh
+pk monitor --apply
+```
 
 Background cleanup uses `launchd` on macOS and `systemd --user` on Linux. It
 runs `pk cleanup --apply --watch` with no external dependencies. Cleanup kills
@@ -77,6 +102,9 @@ processes, stops matching local Docker Compose/devcontainer containers when
 Docker is available, and writes bounded JSONL audit events. Set `PK_AUDIT_PATH`
 to override the default audit file location. `pk skills install` writes the
 bundled skill to `$PK_SKILLS_DIR`, `$CODEX_HOME/skills`, or `~/.codex/skills`.
+
+Running `pk` without a command prints help. Every destructive mode requires an
+explicit `--apply` flag.
 
 ## Development
 
@@ -90,6 +118,12 @@ Build and test:
 ```sh
 go test ./...
 go build ./...
+```
+
+Run black-box CLI tests plus isolated process termination in Docker:
+
+```sh
+./tests/e2e/test.sh
 ```
 
 Build the custom linter locally:

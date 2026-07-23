@@ -23,6 +23,7 @@ type Monitor struct {
 	lister process.Lister
 	killer killer.Killer
 	notify func(name string, pid int32)
+	apply  bool
 
 	mu       sync.Mutex
 	offenses map[int32]*offense
@@ -33,12 +34,14 @@ func New(
 	lister process.Lister,
 	k killer.Killer,
 	notify func(string, int32),
+	apply bool,
 ) *Monitor {
 	return &Monitor{
 		cfg:      cfg,
 		lister:   lister,
 		killer:   k,
 		notify:   notify,
+		apply:    apply,
 		offenses: make(map[int32]*offense),
 	}
 }
@@ -58,7 +61,7 @@ func (m *Monitor) logStart() {
 		"mem_mb", m.cfg.MemoryThreshold,
 		"interval", m.cfg.Interval,
 		"grace", m.cfg.GracePeriod,
-		"dry_run", m.cfg.DryRun,
+		"apply", m.apply,
 	)
 }
 
@@ -191,8 +194,8 @@ func (m *Monitor) killProcess(
 ) {
 	m.logKill(p, duration)
 
-	if m.cfg.DryRun {
-		m.logDryRun(p)
+	if !m.apply {
+		m.logPreview(p)
 		return
 	}
 
@@ -204,8 +207,8 @@ func (m *Monitor) killProcess(
 	m.notifyKilled(p)
 }
 
-func (m *Monitor) logDryRun(p process.Process) {
-	log.Info("Dry run - skipping kill", "pid", p.PID, "name", p.Name)
+func (m *Monitor) logPreview(p process.Process) {
+	log.Info("Preview - skipping kill", "pid", p.PID, "name", p.Name)
 }
 
 func (m *Monitor) killTreeAndLog(
