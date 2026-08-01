@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout homebrew-tap repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: yowainwright/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -32,29 +32,35 @@ jobs:
         env:
           TAG: ${{ inputs.tag_name }}
         run: |
-          VERSION="$TAG"
-          VERSION="${VERSION#v}"
+          TAG_PATTERN='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if [[ ! "$TAG" =~ $TAG_PATTERN ]]; then
+            echo "tag_name must be a v-prefixed semantic version" >&2
+            exit 1
+          fi
+
+          VERSION="${TAG#v}"
           {
-            echo "version=$VERSION"
-            echo "tag=$TAG"
+            printf 'version=%s\n' "$VERSION"
+            printf 'tag=%s\n' "$TAG"
           } >> "$GITHUB_OUTPUT"
 
       - name: Download release assets and calculate SHA256
         id: checksums
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
-          VERSION="${{ steps.release.outputs.tag }}"
           REPO="yowainwright/pk"
 
-          curl --fail --location --show-error --silent -o pk-darwin-arm64 "https://github.com/$REPO/releases/download/$VERSION/pk-darwin-arm64"
+          curl --fail --location --show-error --silent -o pk-darwin-arm64 "https://github.com/$REPO/releases/download/$RELEASE_TAG/pk-darwin-arm64"
           SHA_DARWIN_ARM64=$(sha256sum pk-darwin-arm64 | cut -d' ' -f1)
 
-          curl --fail --location --show-error --silent -o pk-darwin-amd64 "https://github.com/$REPO/releases/download/$VERSION/pk-darwin-amd64"
+          curl --fail --location --show-error --silent -o pk-darwin-amd64 "https://github.com/$REPO/releases/download/$RELEASE_TAG/pk-darwin-amd64"
           SHA_DARWIN_AMD64=$(sha256sum pk-darwin-amd64 | cut -d' ' -f1)
 
-          curl --fail --location --show-error --silent -o pk-linux-arm64 "https://github.com/$REPO/releases/download/$VERSION/pk-linux-arm64"
+          curl --fail --location --show-error --silent -o pk-linux-arm64 "https://github.com/$REPO/releases/download/$RELEASE_TAG/pk-linux-arm64"
           SHA_LINUX_ARM64=$(sha256sum pk-linux-arm64 | cut -d' ' -f1)
 
-          curl --fail --location --show-error --silent -o pk-linux-amd64 "https://github.com/$REPO/releases/download/$VERSION/pk-linux-amd64"
+          curl --fail --location --show-error --silent -o pk-linux-amd64 "https://github.com/$REPO/releases/download/$RELEASE_TAG/pk-linux-amd64"
           SHA_LINUX_AMD64=$(sha256sum pk-linux-amd64 | cut -d' ' -f1)
 
           {
@@ -65,32 +71,39 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Update formula
+        env:
+          FORMULA_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          SHA_DARWIN_ARM64: ${{ steps.checksums.outputs.sha_darwin_arm64 }}
+          SHA_DARWIN_AMD64: ${{ steps.checksums.outputs.sha_darwin_amd64 }}
+          SHA_LINUX_ARM64: ${{ steps.checksums.outputs.sha_linux_arm64 }}
+          SHA_LINUX_AMD64: ${{ steps.checksums.outputs.sha_linux_amd64 }}
         run: |
           mkdir -p Formula
-          cat > Formula/pk.rb << 'FORMULA'
+          cat > Formula/pk.rb << FORMULA
           class Pk < Formula
             desc "Safe-by-default local development process cleanup"
             homepage "https://github.com/yowainwright/pk"
-            version "${{ steps.release.outputs.version }}"
+            version "$FORMULA_VERSION"
             license "MIT"
 
             on_macos do
               if Hardware::CPU.arm?
-                url "https://github.com/yowainwright/pk/releases/download/${{ steps.release.outputs.tag }}/pk-darwin-arm64"
-                sha256 "${{ steps.checksums.outputs.sha_darwin_arm64 }}"
+                url "https://github.com/yowainwright/pk/releases/download/$RELEASE_TAG/pk-darwin-arm64"
+                sha256 "$SHA_DARWIN_ARM64"
               else
-                url "https://github.com/yowainwright/pk/releases/download/${{ steps.release.outputs.tag }}/pk-darwin-amd64"
-                sha256 "${{ steps.checksums.outputs.sha_darwin_amd64 }}"
+                url "https://github.com/yowainwright/pk/releases/download/$RELEASE_TAG/pk-darwin-amd64"
+                sha256 "$SHA_DARWIN_AMD64"
               end
             end
 
             on_linux do
               if Hardware::CPU.arm?
-                url "https://github.com/yowainwright/pk/releases/download/${{ steps.release.outputs.tag }}/pk-linux-arm64"
-                sha256 "${{ steps.checksums.outputs.sha_linux_arm64 }}"
+                url "https://github.com/yowainwright/pk/releases/download/$RELEASE_TAG/pk-linux-arm64"
+                sha256 "$SHA_LINUX_ARM64"
               else
-                url "https://github.com/yowainwright/pk/releases/download/${{ steps.release.outputs.tag }}/pk-linux-amd64"
-                sha256 "${{ steps.checksums.outputs.sha_linux_amd64 }}"
+                url "https://github.com/yowainwright/pk/releases/download/$RELEASE_TAG/pk-linux-amd64"
+                sha256 "$SHA_LINUX_AMD64"
               end
             end
 
@@ -105,6 +118,8 @@ jobs:
           FORMULA
 
       - name: Commit and push
+        env:
+          FORMULA_VERSION: ${{ steps.release.outputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -112,5 +127,5 @@ jobs:
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m "Update pk to ${{ steps.release.outputs.version }}"
+          git commit -m "Update pk to $FORMULA_VERSION"
           git push
