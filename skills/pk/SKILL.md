@@ -12,7 +12,8 @@ Use `pk scan` to preview restartable local process targets.
 Use `pk cleanup` for a dry-run cleanup record.
 Use `pk cleanup --apply` to kill high-confidence process trees and stop matching local containers.
 Use `pk cleanup --apply --watch` to run cleanup continuously.
-Use `pk install` to install background cleanup for the current user.
+Use `pk cleanup --scope processes` or `--scope containers` to limit target types.
+Use `pk install --apply` to install active background cleanup for the current user.
 Use `pk status` to check the background service.
 Use `pk uninstall` to remove the background service.
 Use `pk history` to inspect audit events.
@@ -25,10 +26,10 @@ Install this skill locally:
 pk skills install
 ```
 
-Then install background cleanup:
+After reviewing the preview, install active background cleanup:
 
 ```bash
-pk install
+pk install --apply
 ```
 
 ## Agent Loop

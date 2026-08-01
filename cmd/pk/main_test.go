@@ -30,6 +30,62 @@ func TestRunPrintsVersion(t *testing.T) {
 	}
 }
 
+func TestRunPrintsInjectedVersion(t *testing.T) {
+	oldVersion := version
+	t.Cleanup(func() {
+		version = oldVersion
+	})
+	version = "v1.2.3"
+	var out bytes.Buffer
+
+	err := run([]string{"--version"}, &out)
+	if err != nil {
+		t.Fatalf("run version: %v", err)
+	}
+	if out.String() != "pk v1.2.3\n" {
+		t.Fatalf("unexpected version output %q", out.String())
+	}
+}
+
+func TestRunWithoutArgsWritesHelp(t *testing.T) {
+	deps := commandDeps(t)
+	var out bytes.Buffer
+
+	err := run(nil, &out)
+	if err != nil {
+		t.Fatalf("run help: %v", err)
+	}
+	if !strings.Contains(out.String(), "Destructive commands require --apply") {
+		t.Fatalf("unexpected help output %q", out.String())
+	}
+	if deps.cfg != nil {
+		t.Fatal("expected help not to start the monitor")
+	}
+}
+
+func TestRunWritesCommandHelp(t *testing.T) {
+	commandDeps(t)
+	var out bytes.Buffer
+
+	err := run([]string{"cleanup", "--help"}, &out)
+	if err != nil {
+		t.Fatalf("run cleanup help: %v", err)
+	}
+	if !strings.Contains(out.String(), "Usage: pk cleanup") {
+		t.Fatalf("unexpected help output %q", out.String())
+	}
+}
+
+func TestRunRejectsUnknownHelpTopic(t *testing.T) {
+	commandDeps(t)
+
+	err := run([]string{"help", "missing"}, &bytes.Buffer{})
+
+	if err == nil {
+		t.Fatal("expected unknown help topic error")
+	}
+}
+
 func TestRunReturnsUnknownCommand(t *testing.T) {
 	var out bytes.Buffer
 
@@ -91,6 +147,32 @@ func TestRunCleanupDefaultsToDryRun(t *testing.T) {
 	}
 	applied := false
 	assertCleanupEvent(t, deps.audit.events[0], applied)
+}
+
+func TestRunCleanupContainersScopeSkipsProcessScan(t *testing.T) {
+	deps := commandDeps(t)
+	deps.scanner.err = errors.New("scan should not run")
+	var out bytes.Buffer
+
+	err := run([]string{"cleanup", "--scope", "containers"}, &out)
+	if err != nil {
+		t.Fatalf("run container cleanup: %v", err)
+	}
+	if deps.scanner.called {
+		t.Fatal("expected process scan to be skipped")
+	}
+}
+
+func TestRunCleanupProcessesScopeSkipsDocker(t *testing.T) {
+	deps := commandDeps(t)
+	deps.docker.available = true
+	deps.docker.err = errors.New("docker should not run")
+	var out bytes.Buffer
+
+	err := run([]string{"cleanup", "--scope", "processes"}, &out)
+	if err != nil {
+		t.Fatalf("run process cleanup: %v", err)
+	}
 }
 
 func TestRunCleanupReturnsAuditStoreError(t *testing.T) {
@@ -196,6 +278,17 @@ func TestCleanupConfigParsesWatchOptions(t *testing.T) {
 	if cfg.Interval != 5*time.Second {
 		t.Fatalf("expected five second interval, got %s", cfg.Interval)
 	}
+	if options.scope != cleanupScopeAll {
+		t.Fatalf("expected all scope, got %q", options.scope)
+	}
+}
+
+func TestCleanupConfigRejectsUnknownScope(t *testing.T) {
+	_, _, err := cleanupConfig([]string{"--scope", "unknown"})
+
+	if err == nil {
+		t.Fatal("expected invalid scope error")
+	}
 }
 
 func TestCleanupLoopStopsWhenCanceled(t *testing.T) {
@@ -255,7 +348,7 @@ func TestRunInstallInstallsBackgroundService(t *testing.T) {
 	deps := commandDeps(t)
 	var out bytes.Buffer
 
-	err := run([]string{"install"}, &out)
+	err := run([]string{"install", "--apply"}, &out)
 	if err != nil {
 		t.Fatalf("run install: %v", err)
 	}
@@ -264,6 +357,19 @@ func TestRunInstallInstallsBackgroundService(t *testing.T) {
 	}
 	if out.String() != "installed\n" {
 		t.Fatalf("unexpected output %q", out.String())
+	}
+}
+
+func TestRunInstallRequiresApply(t *testing.T) {
+	deps := commandDeps(t)
+
+	err := run([]string{"install"}, &bytes.Buffer{})
+
+	if err == nil {
+		t.Fatal("expected install to require apply")
+	}
+	if deps.background.installed {
+		t.Fatal("expected background service not to be installed")
 	}
 }
 
@@ -393,12 +499,27 @@ func TestRunMonitorUsesRunner(t *testing.T) {
 	if deps.cfg.Interval != time.Millisecond {
 		t.Fatalf("expected one millisecond interval, got %s", deps.cfg.Interval)
 	}
+	if deps.monitorOptions.apply {
+		t.Fatal("expected monitor to default to preview")
+	}
+}
+
+func TestRunMonitorApplyUsesActiveMode(t *testing.T) {
+	deps := commandDeps(t)
+
+	err := run([]string{"monitor", "--apply"}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("run monitor: %v", err)
+	}
+	if !deps.monitorOptions.apply {
+		t.Fatal("expected active monitor mode")
+	}
 }
 
 func TestNewMonitorReturnsMonitor(t *testing.T) {
 	commandDeps(t)
 
-	monitor := newMonitor(&config.Config{})
+	monitor := newMonitor(&config.Config{}, monitorOptions{})
 
 	if monitor == nil {
 		t.Fatal("expected monitor")
@@ -466,17 +587,16 @@ func TestHandleSignalsCancelsOnSignal(t *testing.T) {
 	assertCanceled(t, canceled)
 }
 
-func TestSplitCommandDefaultsFlagsToMonitor(t *testing.T) {
-	args := make([]string, 0, 1)
-	args = append(args, "-dry-run")
+func TestRunRejectsImplicitMonitorFlags(t *testing.T) {
+	deps := commandDeps(t)
 
-	command, commandArgs := splitCommand(args)
+	err := run([]string{"-cpu", "90"}, &bytes.Buffer{})
 
-	if command != "" {
-		t.Fatalf("expected monitor command, got %q", command)
+	if err == nil {
+		t.Fatal("expected top-level flag error")
 	}
-	if commandArgs[0] != "-dry-run" {
-		t.Fatalf("expected flag to remain in args, got %#v", commandArgs)
+	if deps.cfg != nil {
+		t.Fatal("expected top-level flags not to start the monitor")
 	}
 }
 
@@ -522,9 +642,11 @@ func TestIsVersionCommand(t *testing.T) {
 type fakeScanner struct {
 	reports []scan.Report
 	err     error
+	called  bool
 }
 
 func (s *fakeScanner) Scan(ctx context.Context) ([]scan.Report, error) {
+	s.called = true
 	return s.reports, s.err
 }
 
@@ -634,6 +756,7 @@ type commandTestDeps struct {
 	backgroundErr       error
 	skills              *fakeSkillInstaller
 	cfg                 *config.Config
+	monitorOptions      monitorOptions
 	notificationTitle   string
 	notificationMessage string
 }
@@ -666,8 +789,9 @@ func installCommandDeps(t *testing.T, deps *commandTestDeps) {
 	}
 	newProcessKiller = func() killer.Killer { return deps.killer }
 	newDockerClient = func() docker.Client { return deps.docker }
-	newMonitorRunner = func(cfg *config.Config) monitorRunner {
+	newMonitorRunner = func(cfg *config.Config, options monitorOptions) monitorRunner {
 		deps.cfg = cfg
+		deps.monitorOptions = options
 		return deps.runner
 	}
 	newBackgroundManager = func() (backgroundManager, error) {
@@ -693,7 +817,7 @@ type savedCommandDeps struct {
 	newAudit         func() (auditStore, error)
 	newKiller        func() killer.Killer
 	newDocker        func() docker.Client
-	newRunner        func(*config.Config) monitorRunner
+	newRunner        func(*config.Config, monitorOptions) monitorRunner
 	newBackground    func() (backgroundManager, error)
 	installSkill     func(string) (string, error)
 	defaultSkillRoot func() (string, error)

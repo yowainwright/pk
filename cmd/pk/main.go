@@ -49,15 +49,28 @@ type backgroundManager interface {
 type cleanupOptions struct {
 	apply bool
 	watch bool
+	scope cleanupScope
+}
+
+type cleanupScope string
+
+type monitorOptions struct {
+	apply bool
+}
+
+type installOptions struct {
+	apply bool
 }
 
 var (
-	newProcessLister     = func() process.Lister { return process.NewLister() }
-	newProcessScanner    = func(cfg *config.Config, lister process.Lister) processScanner { return scan.New(cfg, lister) }
-	newAuditStore        = func() (auditStore, error) { return audit.DefaultLog() }
-	newProcessKiller     = func() killer.Killer { return killer.New() }
-	newDockerClient      = func() docker.Client { return docker.NewClient() }
-	newMonitorRunner     = func(cfg *config.Config) monitorRunner { return newMonitor(cfg) }
+	newProcessLister  = func() process.Lister { return process.NewLister() }
+	newProcessScanner = func(cfg *config.Config, lister process.Lister) processScanner { return scan.New(cfg, lister) }
+	newAuditStore     = func() (auditStore, error) { return audit.DefaultLog() }
+	newProcessKiller  = func() killer.Killer { return killer.New() }
+	newDockerClient   = func() docker.Client { return docker.NewClient() }
+	newMonitorRunner  = func(cfg *config.Config, options monitorOptions) monitorRunner {
+		return newMonitor(cfg, options)
+	}
 	newBackgroundManager = func() (backgroundManager, error) { return service.DefaultManager() }
 	installSkill         = skillinstall.Install
 	defaultSkillRoot     = skillinstall.DefaultRoot
@@ -68,9 +81,12 @@ var (
 )
 
 const (
-	reportTimestamps = true
-	defaultApply     = false
-	defaultWatch     = false
+	reportTimestamps       = true
+	defaultApply           = false
+	defaultWatch           = false
+	cleanupScopeAll        = cleanupScope("all")
+	cleanupScopeProcesses  = cleanupScope("processes")
+	cleanupScopeContainers = cleanupScope("containers")
 )
 
 func main() {
@@ -79,11 +95,10 @@ func main() {
 }
 
 func run(args []string, out io.Writer) error {
-	if isVersionCommand(args) {
-		_, err := fmt.Fprintln(out, "pk", version)
+	handled, err := runInformational(args, out)
+	if handled {
 		return err
 	}
-
 	command, commandArgs := splitCommand(args)
 	return dispatch(command, commandArgs, out)
 }
@@ -98,7 +113,7 @@ func dispatch(command string, args []string, out io.Writer) error {
 
 func dispatchPrimary(command string, args []string, out io.Writer) (bool, error) {
 	switch command {
-	case "", "monitor":
+	case "monitor":
 		return true, runMonitor(args)
 	case "scan":
 		return true, runScan(args, out)
@@ -114,7 +129,7 @@ func dispatchPrimary(command string, args []string, out io.Writer) (bool, error)
 func dispatchUtility(command string, args []string, out io.Writer) error {
 	switch command {
 	case "install":
-		return runInstall(out)
+		return runInstall(args, out)
 	case "uninstall":
 		return runUninstall(out)
 	case "status":
@@ -127,7 +142,7 @@ func dispatchUtility(command string, args []string, out io.Writer) error {
 }
 
 func runMonitor(args []string) error {
-	cfg, err := config.ParseArgs("monitor", args)
+	cfg, options, err := monitorConfig(args)
 	if err != nil {
 		return err
 	}
@@ -139,7 +154,7 @@ func runMonitor(args []string) error {
 	defer cancel()
 
 	handleShutdownSignal(cancel)
-	m := newMonitorRunner(cfg)
+	m := newMonitorRunner(cfg, options)
 	return m.Run(ctx)
 }
 
@@ -172,11 +187,15 @@ func runCleanupOnce(
 	options cleanupOptions,
 	out io.Writer,
 ) error {
-	log, results, err := runProcessCleanup(ctx, cfg, options)
+	log, err := newAuditStore()
 	if err != nil {
 		return err
 	}
-	containerResults, err := runDockerCleanup(ctx, log, options.apply)
+	results, err := runProcessCleanup(ctx, cfg, options, log)
+	if err != nil {
+		return err
+	}
+	containerResults, err := runDockerCleanup(ctx, log, options)
 	if err != nil {
 		return err
 	}
@@ -187,31 +206,43 @@ func runProcessCleanup(
 	ctx context.Context,
 	cfg *config.Config,
 	options cleanupOptions,
-) (auditStore, []cleanup.Result, error) {
+	log auditStore,
+) ([]cleanup.Result, error) {
+	if !options.includesProcesses() {
+		return nil, nil
+	}
 	reports, err := scanReports(ctx, cfg)
 	if err != nil {
-		return nil, nil, err
-	}
-	log, err := newAuditStore()
-	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	results, err := cleanup.Run(ctx, reports, newProcessKiller(), log, options.apply)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return log, results, nil
+	return results, nil
 }
 
 func runDockerCleanup(
 	ctx context.Context,
 	log auditStore,
-	apply bool,
+	options cleanupOptions,
 ) ([]docker.Result, error) {
+	if !options.includesContainers() {
+		return nil, nil
+	}
 	client := newDockerClient()
 	if !client.Available() {
 		return nil, nil
 	}
+	return executeDockerCleanup(ctx, client, log, options.apply)
+}
+
+func executeDockerCleanup(
+	ctx context.Context,
+	client docker.Client,
+	log auditStore,
+	apply bool,
+) ([]docker.Result, error) {
 	results, err := docker.Run(ctx, client, log, apply)
 	if err != nil {
 		if docker.IsDaemonUnavailable(err) {
@@ -293,7 +324,14 @@ func runHistory(out io.Writer) error {
 	return audit.WriteEvents(out, events)
 }
 
-func runInstall(out io.Writer) error {
+func runInstall(args []string, out io.Writer) error {
+	options, err := parseInstallOptions(args)
+	if err != nil {
+		return err
+	}
+	if !options.apply {
+		return fmt.Errorf("install requires --apply to enable destructive background cleanup")
+	}
 	manager, err := newBackgroundManager()
 	if err != nil {
 		return err
@@ -374,22 +412,77 @@ func scanReports(ctx context.Context, cfg *config.Config) ([]scan.Report, error)
 
 func cleanupConfig(args []string) (*config.Config, cleanupOptions, error) {
 	var options cleanupOptions
-	cfg, err := config.ParseArgsWith("cleanup", args, func(flags *flag.FlagSet) {
-		flags.BoolVar(&options.apply, "apply", defaultApply, "Kill cleanup targets")
-		flags.BoolVar(&options.watch, "watch", defaultWatch, "Run cleanup on interval")
-	})
+	var scope string
+	register := func(flags *flag.FlagSet) { registerCleanupFlags(flags, &options, &scope) }
+	cfg, err := config.ParseArgsWith("cleanup", args, register)
+	if err != nil {
+		return nil, cleanupOptions{}, err
+	}
+	options.scope, err = parseCleanupScope(scope)
 	if err != nil {
 		return nil, cleanupOptions{}, err
 	}
 	return cfg, options, nil
 }
 
+func registerCleanupFlags(flags *flag.FlagSet, options *cleanupOptions, scope *string) {
+	flags.BoolVar(&options.apply, "apply", defaultApply, "Kill cleanup targets")
+	flags.BoolVar(&options.watch, "watch", defaultWatch, "Run cleanup on interval")
+	flags.StringVar(
+		scope,
+		"scope",
+		string(cleanupScopeAll),
+		"Cleanup scope: all, processes, or containers",
+	)
+}
+
+func parseCleanupScope(value string) (cleanupScope, error) {
+	scope := cleanupScope(value)
+	switch scope {
+	case cleanupScopeAll, cleanupScopeProcesses, cleanupScopeContainers:
+		return scope, nil
+	default:
+		return "", fmt.Errorf("invalid cleanup scope %q", value)
+	}
+}
+
+func (o cleanupOptions) includesProcesses() bool {
+	return o.scope != cleanupScopeContainers
+}
+
+func (o cleanupOptions) includesContainers() bool {
+	return o.scope != cleanupScopeProcesses
+}
+
+func monitorConfig(args []string) (*config.Config, monitorOptions, error) {
+	var options monitorOptions
+	cfg, err := config.ParseArgsWith("monitor", args, func(flags *flag.FlagSet) {
+		flags.BoolVar(
+			&options.apply,
+			"apply",
+			defaultApply,
+			"Terminate processes after the grace period",
+		)
+	})
+	if err != nil {
+		return nil, monitorOptions{}, err
+	}
+	return cfg, options, nil
+}
+
+func parseInstallOptions(args []string) (installOptions, error) {
+	var options installOptions
+	flags := flag.NewFlagSet("install", flag.ContinueOnError)
+	flags.BoolVar(&options.apply, "apply", defaultApply, "Enable destructive background cleanup")
+	if err := flags.Parse(args); err != nil {
+		return installOptions{}, err
+	}
+	return options, nil
+}
+
 func splitCommand(args []string) (string, []string) {
 	args = trimSeparator(args)
 	if len(args) == 0 {
-		return "", args
-	}
-	if isFlag(args[0]) {
 		return "", args
 	}
 	return args[0], args[1:]
@@ -405,14 +498,6 @@ func trimSeparator(args []string) []string {
 	return args
 }
 
-func isFlag(arg string) bool {
-	hasValue := len(arg) > 0
-	if !hasValue {
-		return false
-	}
-	return arg[0] == '-'
-}
-
 func handleSignals(cancel context.CancelFunc) {
 	sigCh := make(chan os.Signal, 1)
 	notifySignal(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -423,10 +508,10 @@ func handleSignals(cancel context.CancelFunc) {
 	}()
 }
 
-func newMonitor(cfg *config.Config) *monitor.Monitor {
+func newMonitor(cfg *config.Config, options monitorOptions) *monitor.Monitor {
 	lister := newProcessLister()
 	processKiller := newProcessKiller()
-	return monitor.New(cfg, lister, processKiller, notifyKilled)
+	return monitor.New(cfg, lister, processKiller, notifyKilled, options.apply)
 }
 
 func notifyKilled(name string, pid int32) {
@@ -444,12 +529,12 @@ func exitOnError(err error) {
 		return
 	}
 
-	log.Error("Monitor error", "error", err)
+	log.Error("pk error", "error", err)
 	exitProcess(1)
 }
 
 func isVersionCommand(args []string) bool {
-	if len(args) == 0 {
+	if len(args) != 1 {
 		return false
 	}
 	isVersionFlag := args[0] == "--version"
