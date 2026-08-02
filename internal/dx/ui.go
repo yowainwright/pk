@@ -58,6 +58,7 @@ type Config struct {
 
 type UI struct {
 	in           *bufio.Reader
+	inputCloser  io.Closer
 	out          io.Writer
 	err          io.Writer
 	color        bool
@@ -68,6 +69,8 @@ type UI struct {
 	timing       Timing
 	timestamps   bool
 	mu           sync.Mutex
+	promptMu     sync.Mutex
+	promptErr    error
 }
 
 func New(config Config) *UI {
@@ -75,6 +78,7 @@ func New(config Config) *UI {
 	capabilities := detectCapabilities(config)
 	return &UI{
 		in:           bufio.NewReader(config.In),
+		inputCloser:  readerCloser(config.In),
 		out:          config.Out,
 		err:          config.Err,
 		color:        colorEnabled(config, capabilities),
@@ -85,6 +89,11 @@ func New(config Config) *UI {
 		timing:       *config.Timing,
 		timestamps:   config.Timestamps,
 	}
+}
+
+func readerCloser(reader io.Reader) io.Closer {
+	closer, _ := reader.(io.Closer)
+	return closer
 }
 
 func (u *UI) Status(kind Kind, message string) error {

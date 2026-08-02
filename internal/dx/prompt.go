@@ -75,16 +75,63 @@ func (u *UI) Ask(ctx context.Context, prompt Prompt) (string, error) {
 }
 
 func (u *UI) readPrompt(ctx context.Context, prompt Prompt) (string, error) {
+	u.promptMu.Lock()
+	defer u.promptMu.Unlock()
+	if u.promptErr != nil {
+		return "", u.promptErr
+	}
+	if err := u.writePrompt(prompt); err != nil {
+		return "", err
+	}
+	result := u.readPromptAnswer()
+	select {
+	case <-ctx.Done():
+		return "", u.cancelPromptInput(ctx.Err())
+	case answer := <-result:
+		return resolvePromptAnswer(ctx, prompt, answer)
+	}
+}
+
+func (u *UI) writePrompt(prompt Prompt) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if _, err := fmt.Fprint(u.err, formatPrompt(u.color, prompt)); err != nil {
-		return "", fmt.Errorf("writing prompt: %w", err)
+		return fmt.Errorf("writing prompt: %w", err)
 	}
-	answer, err := u.in.ReadString('\n')
-	if promptReadFailed(err, answer) {
-		return "", fmt.Errorf("reading prompt: %w", err)
+	return nil
+}
+
+type promptAnswer struct {
+	value string
+	err   error
+}
+
+func (u *UI) readPromptAnswer() <-chan promptAnswer {
+	result := make(chan promptAnswer, 1)
+	go func() {
+		value, err := u.in.ReadString('\n')
+		result <- promptAnswer{value: value, err: err}
+	}()
+	return result
+}
+
+func (u *UI) cancelPromptInput(cancelErr error) error {
+	u.promptErr = cancelErr
+	if u.inputCloser == nil {
+		return cancelErr
 	}
-	return resolveAnswer(ctx, prompt, answer)
+	if err := u.inputCloser.Close(); err != nil {
+		closeErr := fmt.Errorf("closing prompt input: %w", err)
+		return errors.Join(cancelErr, closeErr)
+	}
+	return cancelErr
+}
+
+func resolvePromptAnswer(ctx context.Context, prompt Prompt, answer promptAnswer) (string, error) {
+	if promptReadFailed(answer.err, answer.value) {
+		return "", fmt.Errorf("reading prompt: %w", answer.err)
+	}
+	return resolveAnswer(ctx, prompt, answer.value)
 }
 
 func promptReadFailed(err error, answer string) bool {

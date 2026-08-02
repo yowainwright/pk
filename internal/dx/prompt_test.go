@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -40,6 +41,20 @@ func TestAskRejectsNonInteractiveInput(t *testing.T) {
 	}
 	if output.Len() != 0 {
 		t.Fatalf("expected no prompt output, got %q", output.String())
+	}
+}
+
+func TestAskStopsWhenContextIsCanceled(t *testing.T) {
+	reader, writer := io.Pipe()
+	t.Cleanup(func() { _ = writer.Close() })
+	output := newLockedBuffer()
+	ui := blockingPromptUI(reader, output)
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := startPrompt(ctx, ui)
+	waitForOutput(t, output, "? Continue")
+	cancel()
+	if err := waitForTask(t, finished); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled prompt, got %v", err)
 	}
 }
 
@@ -102,4 +117,21 @@ func promptUI(input string, output *bytes.Buffer) *dx.UI {
 		Capabilities: &capabilities,
 		LookupEnv:    emptyEnv,
 	})
+}
+
+func blockingPromptUI(input io.Reader, output *lockedBuffer) *dx.UI {
+	capabilities := dx.Capabilities{InputTTY: true, ErrorTTY: true}
+	return dx.New(dx.Config{
+		In: input, Err: output, Color: dx.ColorNever,
+		Capabilities: &capabilities, LookupEnv: emptyEnv,
+	})
+}
+
+func startPrompt(ctx context.Context, ui *dx.UI) <-chan error {
+	finished := make(chan error, 1)
+	go func() {
+		_, err := ui.Ask(ctx, dx.Prompt{Label: "Continue"})
+		finished <- err
+	}()
+	return finished
 }

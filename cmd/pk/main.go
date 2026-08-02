@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -43,9 +44,9 @@ type monitorRunner interface {
 }
 
 type backgroundManager interface {
-	Install() error
-	Uninstall() error
-	Status() (string, error)
+	Install(context.Context) error
+	Uninstall(context.Context) error
+	Status(context.Context) (string, error)
 }
 
 type cleanupOptions struct {
@@ -99,6 +100,8 @@ var (
 	sendNotification     = notify.Send
 	handleShutdownSignal = handleSignals
 	notifySignal         = signal.Notify
+	stopSignal           = signal.Stop
+	resetSignals         = signal.Reset
 	exitProcess          = os.Exit
 )
 
@@ -113,7 +116,8 @@ const (
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	handleShutdownSignal(cancel)
+	restoreSignals := handleShutdownSignal(cancel)
+	defer restoreSignals()
 	app, args, err := newApplication(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	if err == nil {
 		err = app.run(args)
@@ -426,12 +430,12 @@ func (a application) runInstall(args []string) error {
 	return a.ui.Value("installed")
 }
 
-func installBackground(context.Context) error {
+func installBackground(ctx context.Context) error {
 	manager, err := newBackgroundManager()
 	if err != nil {
 		return operationError("opening background manager", err)
 	}
-	return operationError("installing background cleanup", manager.Install())
+	return operationError("installing background cleanup", manager.Install(ctx))
 }
 
 func (a application) runUninstall() error {
@@ -442,12 +446,12 @@ func (a application) runUninstall() error {
 	return a.ui.Value("uninstalled")
 }
 
-func uninstallBackground(context.Context) error {
+func uninstallBackground(ctx context.Context) error {
 	manager, err := newBackgroundManager()
 	if err != nil {
 		return operationError("opening background manager", err)
 	}
-	return operationError("uninstalling background cleanup", manager.Uninstall())
+	return operationError("uninstalling background cleanup", manager.Uninstall(ctx))
 }
 
 func (a application) runStatus() error {
@@ -455,13 +459,13 @@ func (a application) runStatus() error {
 	err := a.ui.Task(
 		a.ctx,
 		"Checking background cleanup",
-		func(context.Context) error {
+		func(ctx context.Context) error {
 			manager, managerErr := newBackgroundManager()
 			if managerErr != nil {
 				return operationError("opening background manager", managerErr)
 			}
 			var statusErr error
-			status, statusErr = manager.Status()
+			status, statusErr = manager.Status(ctx)
 			return operationError("reading background status", statusErr)
 		},
 	)
@@ -688,13 +692,34 @@ func trimSeparator(args []string) []string {
 	return args
 }
 
-func handleSignals(cancel context.CancelFunc) {
+func handleSignals(cancel context.CancelFunc) func() {
 	sigCh := make(chan os.Signal, 1)
 	notifySignal(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
+	done := make(chan struct{})
+	var once sync.Once
+	restore := func() {
+		once.Do(func() {
+			stopSignal(sigCh)
+			resetSignals(syscall.SIGINT, syscall.SIGTERM)
+			close(done)
+		})
+	}
+	go waitForSignal(sigCh, done, restore, cancel)
+	return restore
+}
+
+func waitForSignal(
+	sigCh <-chan os.Signal,
+	done <-chan struct{},
+	restore func(),
+	cancel context.CancelFunc,
+) {
+	select {
+	case <-sigCh:
+		restore()
 		cancel()
-	}()
+	case <-done:
+	}
 }
 
 func newMonitor(

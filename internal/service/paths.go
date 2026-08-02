@@ -1,6 +1,9 @@
 package service
 
-import "path/filepath"
+import (
+	"context"
+	"path/filepath"
+)
 
 func (m *Manager) servicePath() string {
 	if m.goos == "darwin" {
@@ -26,9 +29,9 @@ func (m *Manager) launchdService() string {
 	return prefix + launchdLabel
 }
 
-func (m *Manager) statusOutput() ([]byte, error) {
+func (m *Manager) statusOutput(ctx context.Context) ([]byte, error) {
 	if m.goos == "darwin" {
-		return m.runner.Output("launchctl", "print", m.launchdService())
+		return m.runner.Output(ctx, "launchctl", "print", m.launchdService())
 	}
-	return m.runner.Output("systemctl", "--user", "is-active", systemdUnit)
+	return m.runner.Output(ctx, "systemctl", "--user", "is-active", systemdUnit)
 }

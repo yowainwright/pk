@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,7 +13,7 @@ func TestInstallLaunchdWritesPlistAndStartsService(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := testManager(t, "darwin", runner)
 
-	if err := manager.Install(); err != nil {
+	if err := manager.Install(context.Background()); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
@@ -30,7 +31,7 @@ func TestInstallLaunchdReturnsBootstrapErrors(t *testing.T) {
 	runner := &fakeRunner{err: errors.New("bootstrap failed")}
 	manager := testManager(t, "darwin", runner)
 
-	if err := manager.Install(); err == nil {
+	if err := manager.Install(context.Background()); err == nil {
 		t.Fatal("expected bootstrap error")
 	}
 }
@@ -39,7 +40,7 @@ func TestInstallSystemdWritesUnitAndStartsService(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := testManager(t, "linux", runner)
 
-	if err := manager.Install(); err != nil {
+	if err := manager.Install(context.Background()); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
@@ -53,7 +54,7 @@ func TestInstallSystemdReturnsReloadErrors(t *testing.T) {
 	runner := &fakeRunner{err: errors.New("reload failed")}
 	manager := testManager(t, "linux", runner)
 
-	if err := manager.Install(); err == nil {
+	if err := manager.Install(context.Background()); err == nil {
 		t.Fatal("expected reload error")
 	}
 }
@@ -61,11 +62,11 @@ func TestInstallSystemdReturnsReloadErrors(t *testing.T) {
 func TestUninstallLaunchdRemovesPlist(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := testManager(t, "darwin", runner)
-	if err := manager.Install(); err != nil {
+	if err := manager.Install(context.Background()); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
-	if err := manager.Uninstall(); err != nil {
+	if err := manager.Uninstall(context.Background()); err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
 
@@ -76,11 +77,11 @@ func TestUninstallLaunchdRemovesPlist(t *testing.T) {
 func TestUninstallSystemdRemovesUnit(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := testManager(t, "linux", runner)
-	if err := manager.Install(); err != nil {
+	if err := manager.Install(context.Background()); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
-	if err := manager.Uninstall(); err != nil {
+	if err := manager.Uninstall(context.Background()); err != nil {
 		t.Fatalf("uninstall: %v", err)
 	}
 
@@ -90,7 +91,7 @@ func TestUninstallSystemdRemovesUnit(t *testing.T) {
 func TestStatusReportsNotInstalled(t *testing.T) {
 	manager := testManager(t, "linux", &fakeRunner{})
 
-	status, err := manager.Status()
+	status, err := manager.Status(context.Background())
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
@@ -104,7 +105,7 @@ func TestStatusReportsActiveService(t *testing.T) {
 	manager := testManager(t, "linux", runner)
 	writeTestServiceFile(t, manager)
 
-	status, err := manager.Status()
+	status, err := manager.Status(context.Background())
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestStatusUsesLaunchdOnDarwin(t *testing.T) {
 	manager := testManager(t, "darwin", runner)
 	writeTestServiceFile(t, manager)
 
-	status, err := manager.Status()
+	status, err := manager.Status(context.Background())
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestStatusReportsInstalledButStopped(t *testing.T) {
 	manager := testManager(t, "linux", runner)
 	writeTestServiceFile(t, manager)
 
-	status, err := manager.Status()
+	status, err := manager.Status(context.Background())
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
@@ -142,16 +143,26 @@ func TestStatusReportsInstalledButStopped(t *testing.T) {
 	}
 }
 
+func TestStatusReturnsCancellation(t *testing.T) {
+	runner := &fakeRunner{err: context.Canceled}
+	manager := testManager(t, "linux", runner)
+	writeTestServiceFile(t, manager)
+	_, err := manager.Status(context.Background())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled status, got %v", err)
+	}
+}
+
 func TestUnsupportedPlatformReturnsError(t *testing.T) {
 	manager := testManager(t, "windows", &fakeRunner{})
 
-	if err := manager.Install(); err == nil {
+	if err := manager.Install(context.Background()); err == nil {
 		t.Fatal("expected unsupported install error")
 	}
-	if _, err := manager.Status(); err == nil {
+	if _, err := manager.Status(context.Background()); err == nil {
 		t.Fatal("expected unsupported status error")
 	}
-	if err := manager.Uninstall(); err == nil {
+	if err := manager.Uninstall(context.Background()); err == nil {
 		t.Fatal("expected unsupported uninstall error")
 	}
 }
@@ -167,11 +178,23 @@ func TestQuoteSystemdArgEscapesSpecialCharacters(t *testing.T) {
 func TestCommandRunnerRunsCommands(t *testing.T) {
 	runner := commandRunner{}
 
-	if err := runner.Run("true"); err != nil {
+	if err := runner.Run(context.Background(), "true"); err != nil {
 		t.Fatalf("run true: %v", err)
 	}
-	if _, err := runner.Output("true"); err != nil {
+	if _, err := runner.Output(context.Background(), "true"); err != nil {
 		t.Fatalf("output true: %v", err)
+	}
+}
+
+func TestCommandRunnerStopsCanceledCommands(t *testing.T) {
+	runner := commandRunner{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := runner.Run(ctx, "true"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled run, got %v", err)
+	}
+	if _, err := runner.Output(ctx, "true"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled output, got %v", err)
 	}
 }
 
@@ -181,13 +204,19 @@ type fakeRunner struct {
 	err      error
 }
 
-func (r *fakeRunner) Run(name string, args ...string) error {
+func (r *fakeRunner) Run(ctx context.Context, name string, args ...string) error {
 	r.commands = append(r.commands, commandString(name, args))
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return r.err
 }
 
-func (r *fakeRunner) Output(name string, args ...string) ([]byte, error) {
+func (r *fakeRunner) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
 	r.commands = append(r.commands, commandString(name, args))
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return r.output, r.err
 }
 

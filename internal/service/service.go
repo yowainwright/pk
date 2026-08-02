@@ -2,6 +2,8 @@ package service
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,8 +18,8 @@ const (
 )
 
 type Runner interface {
-	Run(name string, args ...string) error
-	Output(name string, args ...string) ([]byte, error)
+	Run(context.Context, string, ...string) error
+	Output(context.Context, string, ...string) ([]byte, error)
 }
 
 type Manager struct {
@@ -52,46 +54,65 @@ func NewManager(
 	return &Manager{goos: goos, home: home, executable: executable, uid: uid, runner: runner}
 }
 
-func (m *Manager) Install() error {
+func (m *Manager) Install(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if m.goos == "darwin" {
-		return m.installLaunchd()
+		return m.installLaunchd(ctx)
 	}
 	if m.goos == "linux" {
-		return m.installSystemd()
+		return m.installSystemd(ctx)
 	}
 	return unsupported(m.goos)
 }
 
-func (m *Manager) Uninstall() error {
+func (m *Manager) Uninstall(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if m.goos == "darwin" {
-		return m.uninstallLaunchd()
+		return m.uninstallLaunchd(ctx)
 	}
 	if m.goos == "linux" {
-		return m.uninstallSystemd()
+		return m.uninstallSystemd(ctx)
 	}
 	return unsupported(m.goos)
 }
 
-func (m *Manager) Status() (string, error) {
+func (m *Manager) Status(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := m.checkSupported(); err != nil {
 		return "", err
 	}
 	if !m.installed() {
 		return "not installed", nil
 	}
-	output, err := m.statusOutput()
+	output, err := m.statusOutput(ctx)
+	return resolveStatus(output, err)
+}
+
+func resolveStatus(output []byte, err error) (string, error) {
+	if errors.Is(err, context.Canceled) {
+		return "", err
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "", err
+	}
 	if err != nil {
 		return "installed but not running", nil
 	}
 	return strings.TrimSpace(string(output)), nil
 }
 
-func (r commandRunner) Run(name string, args ...string) error {
-	return exec.Command(name, args...).Run()
+func (r commandRunner) Run(ctx context.Context, name string, args ...string) error {
+	return exec.CommandContext(ctx, name, args...).Run()
 }
 
-func (r commandRunner) Output(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
+func (r commandRunner) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 func currentUID() string {

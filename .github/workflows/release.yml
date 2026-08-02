@@ -1,24 +1,19 @@
 name: Release
 
 on:
-  workflow_call:
-    inputs:
-      tag_name:
-        description: Existing GitHub release tag to publish
-        required: true
-        type: string
-    secrets:
-      HOMEBREW_TAP_TOKEN:
-        required: true
   workflow_dispatch:
     inputs:
       tag_name:
-        description: Existing GitHub release tag to republish
+        description: Draft GitHub release tag to validate and publish
         required: true
         type: string
 
 permissions:
   contents: write
+
+concurrency:
+  group: publish-release-${{ inputs.tag_name }}
+  cancel-in-progress: false
 
 jobs:
   test:
@@ -35,6 +30,12 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version: "1.26"
+
+      - name: Verify draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.tag_name }}
+        run: test "$(gh release view "$VERSION" --json isDraft --jq .isDraft)" = "true"
 
       - name: Run tests
         run: go test -race ./...
@@ -86,9 +87,34 @@ jobs:
           VERSION: ${{ inputs.tag_name }}
         run: gh release upload "$VERSION" bin/* --clobber
 
+  publish:
+    name: Publish Draft
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Verify release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.tag_name }}
+        run: |
+          test "$(gh release view "$VERSION" --json isDraft --jq .isDraft)" = "true"
+          ASSETS="$(gh release view "$VERSION" --json assets --jq '.assets[].name')"
+          for ASSET in pk-darwin-arm64 pk-darwin-amd64 pk-linux-arm64 pk-linux-amd64 SHA256SUMS; do
+            grep -Fxq "$ASSET" <<< "$ASSETS"
+          done
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.tag_name }}
+        run: gh release edit "$VERSION" --draft=false --latest
+
   update-homebrew:
     name: Update Homebrew
-    needs: build
+    needs: publish
     uses: ./.github/workflows/update-homebrew.yml
     with:
       tag_name: ${{ inputs.tag_name }}

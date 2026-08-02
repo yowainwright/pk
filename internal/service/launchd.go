@@ -2,17 +2,22 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"fmt"
 	"path/filepath"
 )
 
-func (m *Manager) installLaunchd() error {
+func (m *Manager) installLaunchd(ctx context.Context) error {
 	if err := m.writeLaunchdPlist(); err != nil {
 		return err
 	}
-	_ = m.runner.Run("launchctl", "bootout", m.launchdDomain(), m.servicePath())
+	_ = m.runner.Run(ctx, "launchctl", "bootout", m.launchdDomain(), m.servicePath())
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := m.runner.Run(
+		ctx,
 		"launchctl",
 		"bootstrap",
 		m.launchdDomain(),
@@ -20,11 +25,14 @@ func (m *Manager) installLaunchd() error {
 	); err != nil {
 		return fmt.Errorf("starting launchd service: %w", err)
 	}
-	return m.runner.Run("launchctl", "kickstart", "-k", m.launchdService())
+	return m.runner.Run(ctx, "launchctl", "kickstart", "-k", m.launchdService())
 }
 
-func (m *Manager) uninstallLaunchd() error {
-	_ = m.runner.Run("launchctl", "bootout", m.launchdDomain(), m.servicePath())
+func (m *Manager) uninstallLaunchd(ctx context.Context) error {
+	_ = m.runner.Run(ctx, "launchctl", "bootout", m.launchdDomain(), m.servicePath())
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return removeFile(m.servicePath())
 }
 

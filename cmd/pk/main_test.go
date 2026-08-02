@@ -184,6 +184,32 @@ func TestApplicationCancellationStopsScan(t *testing.T) {
 	}
 }
 
+func TestApplicationCancellationStopsInstall(t *testing.T) {
+	deps := commandDeps(t)
+	deps.background.installStarted = make(chan struct{})
+	deps.background.waitForCancellation = true
+	ctx, cancel := context.WithCancel(context.Background())
+	app, args := testApplication(t, ctx, "install", "--apply")
+	finished := make(chan error, 1)
+	go func() { finished <- app.run(args) }()
+	assertCanceled(t, deps.background.installStarted)
+	cancel()
+	if err := waitForCommand(t, finished); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled install, got %v", err)
+	}
+}
+
+func testApplication(t *testing.T, ctx context.Context, args ...string) (application, []string) {
+	t.Helper()
+	app, commandArgs, err := newApplication(
+		ctx, args, strings.NewReader(""), io.Discard, io.Discard,
+	)
+	if err != nil {
+		t.Fatalf("new application: %v", err)
+	}
+	return app, commandArgs
+}
+
 func TestRunScanReturnsParseError(t *testing.T) {
 	commandDeps(t)
 	var out bytes.Buffer
@@ -637,21 +663,38 @@ func TestExitOnErrorExitsForUnexpectedErrors(t *testing.T) {
 	}
 }
 
-func TestHandleSignalsCancelsOnSignal(t *testing.T) {
-	oldNotifySignal := notifySignal
-	defer func() {
-		notifySignal = oldNotifySignal
-	}()
-	var sigCh chan<- os.Signal
-	notifySignal = func(c chan<- os.Signal, signals ...os.Signal) {
-		sigCh = c
-	}
+func TestHandleSignalsCancelsAndRestoresDefaults(t *testing.T) {
+	saved := saveCommandDeps()
+	t.Cleanup(saved.restore)
+	harness := newSignalHarness()
+	harness.install()
 	canceled := make(chan struct{})
-
-	handleSignals(func() { close(canceled) })
-	sigCh <- syscall.SIGTERM
-
+	restore := handleSignals(func() { close(canceled) })
+	t.Cleanup(restore)
+	harness.signalChannel <- syscall.SIGTERM
 	assertCanceled(t, canceled)
+	assertCanceled(t, harness.stopped)
+	if len(harness.reset) != 2 {
+		t.Fatalf("expected restored signals, got %#v", harness.reset)
+	}
+}
+
+type signalHarness struct {
+	signalChannel chan<- os.Signal
+	stopped       chan struct{}
+	reset         []os.Signal
+}
+
+func newSignalHarness() *signalHarness {
+	return &signalHarness{stopped: make(chan struct{})}
+}
+
+func (h *signalHarness) install() {
+	notifySignal = func(channel chan<- os.Signal, signals ...os.Signal) {
+		h.signalChannel = channel
+	}
+	stopSignal = func(chan<- os.Signal) { close(h.stopped) }
+	resetSignals = func(signals ...os.Signal) { h.reset = signals }
 }
 
 func TestRunRejectsImplicitMonitorFlags(t *testing.T) {
@@ -781,23 +824,32 @@ func (r *fakeRunner) Run(ctx context.Context) error {
 }
 
 type fakeBackgroundManager struct {
-	installed   bool
-	uninstalled bool
-	status      string
-	err         error
+	installed           bool
+	uninstalled         bool
+	status              string
+	err                 error
+	installStarted      chan struct{}
+	waitForCancellation bool
 }
 
-func (m *fakeBackgroundManager) Install() error {
+func (m *fakeBackgroundManager) Install(ctx context.Context) error {
 	m.installed = true
+	if m.installStarted != nil {
+		close(m.installStarted)
+	}
+	if m.waitForCancellation {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	return m.err
 }
 
-func (m *fakeBackgroundManager) Uninstall() error {
+func (m *fakeBackgroundManager) Uninstall(context.Context) error {
 	m.uninstalled = true
 	return m.err
 }
 
-func (m *fakeBackgroundManager) Status() (string, error) {
+func (m *fakeBackgroundManager) Status(context.Context) (string, error) {
 	return m.status, m.err
 }
 
@@ -883,7 +935,7 @@ func installCommandDeps(t *testing.T, deps *commandTestDeps) {
 		deps.notificationMessage = message
 		return nil
 	}
-	handleShutdownSignal = func(cancel context.CancelFunc) {}
+	handleShutdownSignal = func(cancel context.CancelFunc) func() { return func() {} }
 }
 
 type savedCommandDeps struct {
@@ -897,8 +949,10 @@ type savedCommandDeps struct {
 	installSkill     func(string) (string, error)
 	defaultSkillRoot func() (string, error)
 	send             func(string, string) error
-	handleSignalFunc func(context.CancelFunc)
+	handleSignalFunc func(context.CancelFunc) func()
 	notifySignalFunc func(chan<- os.Signal, ...os.Signal)
+	stopSignalFunc   func(chan<- os.Signal)
+	resetSignalsFunc func(...os.Signal)
 	exitFunc         func(int)
 }
 
@@ -916,6 +970,8 @@ func saveCommandDeps() savedCommandDeps {
 		send:             sendNotification,
 		handleSignalFunc: handleShutdownSignal,
 		notifySignalFunc: notifySignal,
+		stopSignalFunc:   stopSignal,
+		resetSignalsFunc: resetSignals,
 		exitFunc:         exitProcess,
 	}
 }
@@ -933,6 +989,8 @@ func (d savedCommandDeps) restore() {
 	sendNotification = d.send
 	handleShutdownSignal = d.handleSignalFunc
 	notifySignal = d.notifySignalFunc
+	stopSignal = d.stopSignalFunc
+	resetSignals = d.resetSignalsFunc
 	exitProcess = d.exitFunc
 }
 
@@ -979,5 +1037,16 @@ func assertCanceled(t *testing.T, canceled <-chan struct{}) {
 	case <-canceled:
 	case <-time.After(time.Second):
 		t.Fatal("expected cancellation")
+	}
+}
+
+func waitForCommand(t *testing.T, finished <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-finished:
+		return err
+	case <-time.After(time.Second):
+		t.Fatal("expected command to finish")
+		return nil
 	}
 }
