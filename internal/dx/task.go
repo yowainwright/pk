@@ -8,6 +8,9 @@ import (
 type Action func(context.Context) error
 
 func (u *UI) Task(ctx context.Context, label string, action Action) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if !u.rich {
 		return action(ctx)
 	}
@@ -22,8 +25,9 @@ func (u *UI) waitForTask(ctx context.Context, label string, result <-chan error)
 	timer := u.clock.NewTimer(u.timing.LoaderDelay)
 	defer timer.Stop()
 	select {
-	case err := <-result:
-		return u.completeTask(ctx, label, err)
+	case actionErr := <-result:
+		statusErr := u.renderTaskCompletion(ctx, label, actionErr)
+		return firstError(actionErr, statusErr)
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-timer.C():
@@ -32,8 +36,10 @@ func (u *UI) waitForTask(ctx context.Context, label string, result <-chan error)
 }
 
 func (u *UI) animateTask(ctx context.Context, label string, result <-chan error) error {
-	if err := u.startLoader(label); err != nil {
-		return u.waitAfterOutputError(ctx, result, err)
+	startErr := u.startLoader(label)
+	if startErr != nil {
+		restoreErr := u.restoreTerminal()
+		return u.waitAfterOutputError(ctx, result, firstError(startErr, restoreErr))
 	}
 	ticker := u.clock.NewTicker(u.frameInterval())
 	defer ticker.Stop()
@@ -90,20 +96,22 @@ func nextTaskEvent(task runningTask) taskEvent {
 }
 
 func (u *UI) finishTask(task runningTask, actionErr error) error {
-	u.stopLoader()
-	return u.completeTask(task.ctx, task.label, actionErr)
+	restoreErr := u.restoreTerminal()
+	statusErr := u.renderTaskCompletion(task.ctx, task.label, actionErr)
+	return firstError(actionErr, restoreErr, statusErr)
 }
 
 func (u *UI) cancelTask(ctx context.Context) error {
-	u.stopLoader()
-	return ctx.Err()
+	restoreErr := u.restoreTerminal()
+	return firstError(ctx.Err(), restoreErr)
 }
 
 func (u *UI) advanceLoader(task *runningTask) error {
 	err := u.writeLoader(task.label, task.frame)
 	if err != nil {
-		u.stopLoader()
-		return u.waitAfterOutputError(task.ctx, task.result, err)
+		restoreErr := u.restoreTerminal()
+		outputErr := firstError(err, restoreErr)
+		return u.waitAfterOutputError(task.ctx, task.result, outputErr)
 	}
 	task.frame++
 	return nil
@@ -113,26 +121,35 @@ func (u *UI) startLoader(label string) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	_, err := fmt.Fprint(u.err, ansiHideCursor+loaderFrame(u.color, label, 0))
-	return err
+	if err != nil {
+		return fmt.Errorf("starting loader: %w", err)
+	}
+	return nil
 }
 
 func (u *UI) writeLoader(label string, frame int) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	_, err := fmt.Fprint(u.err, loaderFrame(u.color, label, frame))
-	return err
+	if err != nil {
+		return fmt.Errorf("updating loader: %w", err)
+	}
+	return nil
 }
 
-func (u *UI) stopLoader() {
+func (u *UI) restoreTerminal() error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	_, _ = fmt.Fprint(u.err, ansiClearLine+ansiShowCursor)
+	_, err := fmt.Fprint(u.err, ansiClearLine+ansiShowCursor)
+	if err != nil {
+		return fmt.Errorf("restoring terminal: %w", err)
+	}
+	return nil
 }
 
-func (u *UI) completeTask(ctx context.Context, label string, actionErr error) error {
+func (u *UI) renderTaskCompletion(ctx context.Context, label string, actionErr error) error {
 	if actionErr != nil {
-		_ = u.Status(Failure, label)
-		return actionErr
+		return u.Status(Failure, label)
 	}
 	return u.Shine(ctx, label)
 }
@@ -144,12 +161,9 @@ func (u *UI) waitAfterOutputError(
 ) error {
 	select {
 	case actionErr := <-result:
-		if actionErr != nil {
-			return actionErr
-		}
-		return outputErr
+		return firstError(actionErr, outputErr)
 	case <-ctx.Done():
-		return ctx.Err()
+		return firstError(ctx.Err(), outputErr)
 	}
 }
 

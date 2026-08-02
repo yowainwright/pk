@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
@@ -163,6 +164,23 @@ func TestRunScanReturnsScannerError(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected scan error")
+	}
+}
+
+func TestApplicationCancellationStopsScan(t *testing.T) {
+	deps := commandDeps(t)
+	deps.scanner.requireCanceled = true
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out bytes.Buffer
+
+	app, args, err := newApplication(ctx, []string{"scan"}, strings.NewReader(""), &out, io.Discard)
+	if err != nil {
+		t.Fatalf("new application: %v", err)
+	}
+	err = app.run(args)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled scan, got %v", err)
 	}
 }
 
@@ -516,7 +534,7 @@ func TestRunInstallReturnsManagerErrors(t *testing.T) {
 
 	err := run([]string{"install", "--apply"}, &out)
 
-	if err != deps.backgroundErr {
+	if !errors.Is(err, deps.backgroundErr) {
 		t.Fatalf("expected manager error, got %v", err)
 	}
 }
@@ -573,7 +591,9 @@ func TestNewMonitorReturnsMonitor(t *testing.T) {
 func TestNotifyKilledSendsNotification(t *testing.T) {
 	deps := commandDeps(t)
 
-	notifyKilled("node", 42)
+	if err := notifyKilled("node", 42); err != nil {
+		t.Fatalf("notify killed: %v", err)
+	}
 
 	if deps.notificationTitle != "pk" {
 		t.Fatalf("expected notification title, got %q", deps.notificationTitle)
@@ -583,13 +603,16 @@ func TestNotifyKilledSendsNotification(t *testing.T) {
 	}
 }
 
-func TestNotifyKilledIgnoresNotificationErrors(t *testing.T) {
+func TestNotifyKilledReturnsNotificationErrors(t *testing.T) {
 	commandDeps(t)
+	expected := errors.New("notification failed")
 	sendNotification = func(title string, message string) error {
-		return errors.New("notification failed")
+		return expected
 	}
 
-	notifyKilled("node", 42)
+	if err := notifyKilled("node", 42); !errors.Is(err, expected) {
+		t.Fatalf("expected notification error, got %v", err)
+	}
 }
 
 func TestExitOnErrorIgnoresExpectedErrors(t *testing.T) {
@@ -684,13 +707,17 @@ func TestIsVersionCommand(t *testing.T) {
 }
 
 type fakeScanner struct {
-	reports []scan.Report
-	err     error
-	called  bool
+	reports         []scan.Report
+	err             error
+	called          bool
+	requireCanceled bool
 }
 
 func (s *fakeScanner) Scan(ctx context.Context) ([]scan.Report, error) {
 	s.called = true
+	if s.requireCanceled {
+		return nil, ctx.Err()
+	}
 	return s.reports, s.err
 }
 

@@ -22,8 +22,10 @@ func (u *UI) Shine(ctx context.Context, label string) error {
 func (u *UI) animateShine(ctx context.Context, label string) error {
 	duration := u.clock.NewTimer(u.timing.ShineDuration)
 	defer duration.Stop()
-	if err := u.startShine(label); err != nil {
-		return err
+	startErr := u.startShine(label)
+	if startErr != nil {
+		restoreErr := u.restoreTerminal()
+		return firstError(startErr, restoreErr)
 	}
 	ticker := u.clock.NewTicker(u.frameInterval())
 	defer ticker.Stop()
@@ -34,21 +36,37 @@ func (u *UI) runShine(ctx context.Context, label string, duration Timer, ticker 
 	frame := 1
 	for {
 		event := nextShineEvent(ctx, duration, ticker)
-		switch event {
-		case shineCanceled:
-			u.stopLoader()
-			return ctx.Err()
-		case shineFinished:
-			u.stopLoader()
-			return u.Status(Gold, label)
-		case shineTicked:
-			if err := u.writeShine(label, frame); err != nil {
-				u.stopLoader()
-				return err
-			}
-			frame++
+		if event == shineCanceled {
+			return u.cancelShine(ctx)
 		}
+		if event == shineFinished {
+			return u.completeShine(label)
+		}
+		if err := u.updateShine(label, frame); err != nil {
+			return err
+		}
+		frame++
 	}
+}
+
+func (u *UI) cancelShine(ctx context.Context) error {
+	restoreErr := u.restoreTerminal()
+	return firstError(ctx.Err(), restoreErr)
+}
+
+func (u *UI) completeShine(label string) error {
+	restoreErr := u.restoreTerminal()
+	statusErr := u.Status(Gold, label)
+	return firstError(restoreErr, statusErr)
+}
+
+func (u *UI) updateShine(label string, frame int) error {
+	err := u.writeShine(label, frame)
+	if err == nil {
+		return nil
+	}
+	restoreErr := u.restoreTerminal()
+	return firstError(err, restoreErr)
 }
 
 type shineEvent uint8
@@ -74,14 +92,20 @@ func (u *UI) startShine(label string) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	_, err := fmt.Fprint(u.err, ansiHideCursor+shineFrame(u.color, label, 0))
-	return err
+	if err != nil {
+		return fmt.Errorf("starting shine: %w", err)
+	}
+	return nil
 }
 
 func (u *UI) writeShine(label string, frame int) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	_, err := fmt.Fprint(u.err, shineFrame(u.color, label, frame))
-	return err
+	if err != nil {
+		return fmt.Errorf("updating shine: %w", err)
+	}
+	return nil
 }
 
 func (u *UI) frameInterval() time.Duration {

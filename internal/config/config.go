@@ -3,6 +3,7 @@ package config
 import (
 	"flag"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -43,7 +44,7 @@ var defaultProtected = []string{
 }
 
 func ParseArgs(name string, args []string) (*Config, error) {
-	return ParseArgsWith(name, args, nil)
+	return ParseArgsWithOutput(name, args, io.Discard, nil)
 }
 
 func ParseArgsWith(
@@ -51,7 +52,16 @@ func ParseArgsWith(
 	args []string,
 	registerExtra func(*flag.FlagSet),
 ) (*Config, error) {
-	cfg, flags, protectedStr := configFlags(name, registerExtra)
+	return ParseArgsWithOutput(name, args, io.Discard, registerExtra)
+}
+
+func ParseArgsWithOutput(
+	name string,
+	args []string,
+	output io.Writer,
+	registerExtra func(*flag.FlagSet),
+) (*Config, error) {
+	cfg, flags, protectedStr := configFlags(name, output, registerExtra)
 	if err := parseFlags(name, args, flags); err != nil {
 		return nil, err
 	}
@@ -60,10 +70,12 @@ func ParseArgsWith(
 
 func configFlags(
 	name string,
+	output io.Writer,
 	registerExtra func(*flag.FlagSet),
 ) (*Config, *flag.FlagSet, *string) {
 	cfg := &Config{}
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
+	flags.SetOutput(output)
 	protectedStr := registerFlags(flags, cfg)
 	if registerExtra != nil {
 		registerExtra(flags)

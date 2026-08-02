@@ -1,7 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"flag"
+	"strings"
 	"testing"
 	"time"
 )
@@ -53,6 +55,17 @@ func TestParseArgsReturnsFlagErrors(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected parse error")
+	}
+}
+
+func TestParseArgsWithOutputRoutesFlagDiagnostics(t *testing.T) {
+	var output bytes.Buffer
+	_, err := ParseArgsWithOutput("test", testArgs("-bad"), &output, nil)
+	if err == nil {
+		t.Fatal("expected parse error")
+	}
+	if !strings.Contains(output.String(), "flag provided but not defined") {
+		t.Fatalf("unexpected flag diagnostics %q", output.String())
 	}
 }
 

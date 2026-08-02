@@ -63,7 +63,10 @@ func (u *UI) writeLog(line string) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	_, err := fmt.Fprintln(u.err, line)
-	return err
+	if err != nil {
+		return fmt.Errorf("writing log: %w", err)
+	}
+	return nil
 }
 
 func appendAttributes(parts []string, groups []string, attrs []slog.Attr) []string {

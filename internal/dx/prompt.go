@@ -78,11 +78,11 @@ func (u *UI) readPrompt(ctx context.Context, prompt Prompt) (string, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if _, err := fmt.Fprint(u.err, formatPrompt(u.color, prompt)); err != nil {
-		return "", err
+		return "", fmt.Errorf("writing prompt: %w", err)
 	}
 	answer, err := u.in.ReadString('\n')
 	if promptReadFailed(err, answer) {
-		return "", err
+		return "", fmt.Errorf("reading prompt: %w", err)
 	}
 	return resolveAnswer(ctx, prompt, answer)
 }

@@ -152,8 +152,9 @@ func TestCheckNotifiesAfterKill(t *testing.T) {
 	killer := &fakeKiller{}
 	notified := false
 	options := Options{Apply: applyMode}
-	monitor := New(cfg, &fakeLister{}, killer, func(string, int32) {
+	monitor := New(cfg, &fakeLister{}, killer, func(string, int32) error {
 		notified = true
+		return nil
 	}, options)
 	monitor.lister = &fakeLister{procs: processes(overCPUProcess())}
 
@@ -171,8 +172,9 @@ func TestCheckDoesNotNotifyWhenKillFails(t *testing.T) {
 	killer := &fakeKiller{err: errors.New("denied")}
 	notified := false
 	options := Options{Apply: applyMode}
-	monitor := New(cfg, &fakeLister{}, killer, func(string, int32) {
+	monitor := New(cfg, &fakeLister{}, killer, func(string, int32) error {
 		notified = true
+		return nil
 	}, options)
 	monitor.lister = &fakeLister{procs: processes(overCPUProcess())}
 
@@ -182,6 +184,25 @@ func TestCheckDoesNotNotifyWhenKillFails(t *testing.T) {
 	if notified {
 		t.Fatal("expected no notification")
 	}
+}
+
+func TestCheckLogsNotificationErrors(t *testing.T) {
+	var logs bytes.Buffer
+	monitor := notificationFailureMonitor(&logs)
+	monitor.check(context.Background())
+	monitor.check(context.Background())
+	if !strings.Contains(logs.String(), "Notification failed") {
+		t.Fatalf("expected notification warning, got %q", logs.String())
+	}
+}
+
+func notificationFailureMonitor(logs *bytes.Buffer) *Monitor {
+	cfg := applyConfig()
+	cfg.GracePeriod = 0
+	logger := slog.New(slog.NewTextHandler(logs, nil))
+	notify := func(string, int32) error { return errors.New("notification failed") }
+	options := Options{Apply: applyMode, Logger: logger}
+	return New(cfg, &fakeLister{procs: processes(overCPUProcess())}, &fakeKiller{}, notify, options)
 }
 
 func TestCheckSkipsProtectedProcesses(t *testing.T) {

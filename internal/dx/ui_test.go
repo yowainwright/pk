@@ -2,6 +2,9 @@ package dx_test
 
 import (
 	"bytes"
+	"errors"
+	"io"
+	"os"
 	"testing"
 
 	"github.com/yowainwright/pk/internal/dx"
@@ -49,6 +52,59 @@ func TestValueRemainsStableWhenColorIsForced(t *testing.T) {
 	if output.String() != "active\n" {
 		t.Fatalf("unexpected value %q", output.String())
 	}
+}
+
+func TestAutomaticColorRejectsNullDevice(t *testing.T) {
+	null, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open null device: %v", err)
+	}
+	t.Cleanup(func() { _ = null.Close() })
+	ui := dx.New(dx.Config{Err: null, Color: dx.ColorAuto, LookupEnv: emptyEnv})
+
+	if text := ui.Text(dx.Success, "ready"); text != "ready" {
+		t.Fatalf("unexpected null-device color %q", text)
+	}
+}
+
+func TestOutputErrorsIncludeOperation(t *testing.T) {
+	expected := errors.New("write failed")
+	writer := errorWriter{err: expected}
+	ui := dx.New(dx.Config{Out: writer, Err: writer, LookupEnv: emptyEnv})
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "status", run: func() error { return ui.Status(dx.Failure, "failed") }},
+		{name: "value", run: func() error { return ui.Value("value") }},
+		{name: "output", run: func() error { return ui.Write("output") }},
+	}
+	for _, current := range tests {
+		t.Run(current.name, func(t *testing.T) {
+			if err := current.run(); !errors.Is(err, expected) {
+				t.Fatalf("expected wrapped writer error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestErrorWriterReturnsConfiguredStream(t *testing.T) {
+	var output bytes.Buffer
+	ui := dx.New(dx.Config{Err: &output, LookupEnv: emptyEnv})
+	if _, err := io.WriteString(ui.ErrorWriter(), "diagnostic"); err != nil {
+		t.Fatalf("write diagnostic: %v", err)
+	}
+	if output.String() != "diagnostic" {
+		t.Fatalf("unexpected diagnostic output %q", output.String())
+	}
+}
+
+type errorWriter struct {
+	err error
+}
+
+func (w errorWriter) Write([]byte) (int, error) {
+	return 0, w.err
 }
 
 func TestAutomaticColorRespectsTerminalEnvironment(t *testing.T) {

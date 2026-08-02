@@ -2,9 +2,10 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"runtime/debug"
 	"strings"
+
+	"github.com/yowainwright/pk/internal/dx"
 )
 
 const rootUsage = `pk safely previews local process cleanup by default.
@@ -59,20 +60,20 @@ const skillsUsage = `Usage:
   pk skills path
 `
 
-func runInformational(args []string, out io.Writer) (bool, error) {
+func runInformational(args []string, ui *dx.UI) (bool, error) {
 	if isVersionCommand(args) {
-		return true, writeVersion(out)
+		return true, writeVersion(ui)
 	}
 	topic, requested := helpTopic(args)
 	if !requested {
 		return false, nil
 	}
-	return true, writeUsage(out, topic)
+	return true, writeUsage(ui, topic)
 }
 
-func writeVersion(out io.Writer) error {
-	_, err := fmt.Fprintln(out, "pk", displayVersion())
-	return err
+func writeVersion(ui *dx.UI) error {
+	value := fmt.Sprintf("pk %s", displayVersion())
+	return ui.Value(value)
 }
 
 func displayVersion() string {
@@ -138,13 +139,12 @@ func isHelpFlag(arg string) bool {
 	return isShortHelp || isLongHelp
 }
 
-func writeUsage(out io.Writer, topic string) error {
+func writeUsage(ui *dx.UI, topic string) error {
 	usage, ok := usageForTopic(topic)
 	if !ok {
 		return fmt.Errorf("unknown help topic %q", topic)
 	}
-	_, err := fmt.Fprint(out, usage)
-	return err
+	return ui.Write(usage)
 }
 
 func usageForTopic(topic string) (string, bool) {

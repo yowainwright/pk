@@ -43,6 +43,19 @@ func TestAskRejectsNonInteractiveInput(t *testing.T) {
 	}
 }
 
+func TestConfirmRejectsInvalidAnswer(t *testing.T) {
+	var output bytes.Buffer
+	ui := promptUI("maybe\n", &output)
+
+	_, err := ui.Confirm(context.Background(), dx.Confirmation{Label: "Continue"})
+	if err == nil {
+		t.Fatal("expected invalid confirmation error")
+	}
+	if !strings.Contains(err.Error(), "enter yes or no") {
+		t.Fatalf("unexpected confirmation error %v", err)
+	}
+}
+
 type confirmationCase struct {
 	name         string
 	input        string

@@ -2,6 +2,12 @@ package dx
 
 import "time"
 
+const (
+	defaultLoaderDelay   = 200 * time.Millisecond
+	defaultFrameInterval = 80 * time.Millisecond
+	defaultShineDuration = 240 * time.Millisecond
+)
+
 type Timing struct {
 	LoaderDelay   time.Duration
 	FrameInterval time.Duration
@@ -9,13 +15,10 @@ type Timing struct {
 }
 
 func DefaultTiming() Timing {
-	loaderDelay := 200 * time.Millisecond
-	frameInterval := 80 * time.Millisecond
-	shineDuration := 240 * time.Millisecond
 	return Timing{
-		LoaderDelay:   loaderDelay,
-		FrameInterval: frameInterval,
-		ShineDuration: shineDuration,
+		LoaderDelay:   defaultLoaderDelay,
+		FrameInterval: defaultFrameInterval,
+		ShineDuration: defaultShineDuration,
 	}
 }
 

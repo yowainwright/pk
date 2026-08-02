@@ -26,7 +26,7 @@ type Monitor struct {
 	cfg    *config.Config
 	lister process.Lister
 	killer killer.Killer
-	notify func(name string, pid int32)
+	notify func(name string, pid int32) error
 	apply  bool
 	logger *slog.Logger
 
@@ -38,7 +38,7 @@ func New(
 	cfg *config.Config,
 	lister process.Lister,
 	k killer.Killer,
-	notify func(string, int32),
+	notify func(string, int32) error,
 	options Options,
 ) *Monitor {
 	return &Monitor{
@@ -257,8 +257,11 @@ func (m *Monitor) killTree(
 }
 
 func (m *Monitor) notifyKilled(p process.Process) {
-	if m.notify != nil {
-		m.notify(p.Name, p.PID)
+	if m.notify == nil {
+		return
+	}
+	if err := m.notify(p.Name, p.PID); err != nil {
+		m.logger.Warn("Notification failed", "pid", p.PID, "name", p.Name, "error", err)
 	}
 }
 

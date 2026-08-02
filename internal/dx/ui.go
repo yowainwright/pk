@@ -91,7 +91,10 @@ func (u *UI) Status(kind Kind, message string) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	_, err := fmt.Fprintln(u.err, formatStatus(u.color, kind, message))
-	return err
+	if err != nil {
+		return fmt.Errorf("writing status: %w", err)
+	}
+	return nil
 }
 
 func (u *UI) Text(kind Kind, text string) string {
@@ -102,7 +105,33 @@ func (u *UI) Value(value any) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	_, err := fmt.Fprintln(u.out, value)
-	return err
+	if err != nil {
+		return fmt.Errorf("writing value: %w", err)
+	}
+	return nil
+}
+
+func (u *UI) Write(text string) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	_, err := io.WriteString(u.out, text)
+	if err != nil {
+		return fmt.Errorf("writing output: %w", err)
+	}
+	return nil
+}
+
+func (u *UI) ErrorWriter() io.Writer {
+	return u.err
+}
+
+func firstError(values ...error) error {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
 }
 
 func withDefaults(config Config) Config {
@@ -160,7 +189,27 @@ func isTerminal(stream any) bool {
 	if err != nil {
 		return false
 	}
-	return info.Mode()&os.ModeCharDevice != 0
+	isCharacterDevice := info.Mode()&os.ModeCharDevice != 0
+	if !isCharacterDevice {
+		return false
+	}
+	return !isNullDevice(info)
+}
+
+func isNullDevice(info os.FileInfo) bool {
+	null, err := os.Open(os.DevNull)
+	if err != nil {
+		return false
+	}
+	nullInfo, statErr := null.Stat()
+	closeErr := null.Close()
+	if statErr != nil {
+		return false
+	}
+	if closeErr != nil {
+		return false
+	}
+	return os.SameFile(info, nullInfo)
 }
 
 func colorEnabled(config Config, capabilities Capabilities) bool {

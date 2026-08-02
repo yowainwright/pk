@@ -33,6 +33,24 @@ func TestTaskReturnsActionErrorUnchangedWithoutTTY(t *testing.T) {
 	}
 }
 
+func TestTaskDoesNotStartAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+	ui := quietUI(&bytes.Buffer{})
+
+	err := ui.Task(ctx, "Running action", func(context.Context) error {
+		called = true
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled task, got %v", err)
+	}
+	if called {
+		t.Fatal("expected canceled action not to start")
+	}
+}
+
 func TestTaskDelaysLoaderUntilThreshold(t *testing.T) {
 	output, clock, ui := delayedTaskUI()
 	release := make(chan struct{})
@@ -71,6 +89,24 @@ func TestTaskRestoresCursorWhenCanceled(t *testing.T) {
 	}
 }
 
+func TestTaskRestoresCursorAfterStartError(t *testing.T) {
+	expected := errors.New("write failed")
+	output := newFailFirstWriter(expected)
+	clock := newManualClock()
+	ui := failingTaskUI(output, clock)
+	release := make(chan struct{})
+	finished := startBlockedTask(ui, release)
+	clock.nextTimer(t).timer.fire()
+	waitForFirstWrite(t, output)
+	close(release)
+	if err := waitForTask(t, finished); !errors.Is(err, expected) {
+		t.Fatalf("expected writer error, got %v", err)
+	}
+	if output.String() != "\r\x1b[2K\x1b[?25h" {
+		t.Fatalf("expected restored cursor, got %q", output.String())
+	}
+}
+
 func quietUI(output *bytes.Buffer) *dx.UI {
 	return dx.New(dx.Config{
 		Err:          output,
@@ -84,6 +120,25 @@ func delayedTaskUI() (*lockedBuffer, *manualClock, *dx.UI) {
 	clock := newManualClock()
 	timing := dx.Timing{LoaderDelay: 200 * time.Millisecond, FrameInterval: 50 * time.Millisecond}
 	return output, clock, animationUI(output, clock, &timing)
+}
+
+func failingTaskUI(output *failFirstWriter, clock *manualClock) *dx.UI {
+	timing := dx.Timing{LoaderDelay: time.Millisecond, FrameInterval: time.Millisecond}
+	capabilities := dx.Capabilities{ErrorTTY: true}
+	config := dx.Config{
+		Err: output, Capabilities: &capabilities, LookupEnv: emptyEnv,
+		Clock: clock, Timing: &timing,
+	}
+	return dx.New(config)
+}
+
+func waitForFirstWrite(t *testing.T, output *failFirstWriter) {
+	t.Helper()
+	select {
+	case <-output.firstWrite:
+	case <-time.After(time.Second):
+		t.Fatal("expected first write")
+	}
 }
 
 func startBlockedTask(ui *dx.UI, release <-chan struct{}) <-chan error {
