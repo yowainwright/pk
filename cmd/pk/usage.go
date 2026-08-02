@@ -105,12 +105,28 @@ func helpTopic(args []string) (string, bool) {
 	if args[0] == "help" {
 		return strings.Join(args[1:], " "), true
 	}
-	for index, arg := range args {
+	if !hasHelpFlag(args) {
+		return "", false
+	}
+	return strings.Join(leadingCommand(args), " "), true
+}
+
+func hasHelpFlag(args []string) bool {
+	for _, arg := range args {
 		if isHelpFlag(arg) {
-			return strings.Join(args[:index], " "), true
+			return true
 		}
 	}
-	return "", false
+	return false
+}
+
+func leadingCommand(args []string) []string {
+	for index, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			return args[:index]
+		}
+	}
+	return args
 }
 
 func isHelpFlag(arg string) bool {

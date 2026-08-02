@@ -125,7 +125,9 @@ func TestCommandHelpRoutes(t *testing.T) {
 	}{
 		{args: []string{"scan", "--help"}, expected: "Usage: pk scan"},
 		{args: []string{"help", "cleanup"}, expected: "Usage: pk cleanup"},
+		{args: []string{"cleanup", "--apply", "--help"}, expected: "Usage: pk cleanup"},
 		{args: []string{"monitor", "-h"}, expected: "Usage: pk monitor"},
+		{args: []string{"monitor", "--apply", "--help"}, expected: "Usage: pk monitor"},
 		{args: []string{"skills", "install", "--help"}, expected: "pk skills install"},
 	}
 	for _, current := range cases {

@@ -76,6 +76,19 @@ func TestRunWritesCommandHelp(t *testing.T) {
 	}
 }
 
+func TestRunWritesCommandHelpAfterOptions(t *testing.T) {
+	commandDeps(t)
+	var out bytes.Buffer
+
+	err := run([]string{"cleanup", "--apply", "--help"}, &out)
+	if err != nil {
+		t.Fatalf("run cleanup help: %v", err)
+	}
+	if !strings.Contains(out.String(), "Usage: pk cleanup") {
+		t.Fatalf("unexpected help output %q", out.String())
+	}
+}
+
 func TestRunRejectsUnknownHelpTopic(t *testing.T) {
 	commandDeps(t)
 
