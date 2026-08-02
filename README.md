@@ -106,6 +106,18 @@ bundled skill to `$PK_SKILLS_DIR`, `$CODEX_HOME/skills`, or `~/.codex/skills`.
 Running `pk` without a command prints help. Every destructive mode requires an
 explicit `--apply` flag.
 
+Color is automatic on interactive terminals and can be controlled globally:
+
+```sh
+pk --color=always scan
+pk cleanup --color=never
+```
+
+`--color` accepts `auto`, `always`, or `never`. Rich output is disabled for
+pipes, CI, `TERM=dumb`, and `NO_COLOR`. Data remains plain on stdout; prompts,
+loaders, completion shimmer, and structured status output use stderr. The UI
+layer is implemented with the Go standard library and adds no dependencies.
+
 ## Development
 
 <!-- local Go and legibility lint commands derived from go.mod, .mise.toml, .custom-gcl.yml, .golangci.yml, and .github/workflows/ci.yml -->

@@ -24,6 +24,9 @@ Commands:
   skills path          Print the skill installation path
   version              Print the version
 
+Global options:
+  --color MODE         Set color to auto, always, or never
+
 Destructive commands require --apply. Run "pk help <command>" for details.
 `
 

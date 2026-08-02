@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"strings"
 	"syscall"
@@ -27,6 +28,36 @@ func TestRunPrintsVersion(t *testing.T) {
 	}
 	if out.String() != "pk dev\n" {
 		t.Fatalf("unexpected version output %q", out.String())
+	}
+}
+
+func TestRunAcceptsGlobalColorOptions(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "before command", args: []string{"--color=never", "version"}},
+		{name: "after command", args: []string{"version", "--color", "never"}},
+	}
+	for _, current := range tests {
+		t.Run(current.name, func(t *testing.T) {
+			var out bytes.Buffer
+
+			if err := run(current.args, &out); err != nil {
+				t.Fatalf("run version: %v", err)
+			}
+			if out.String() != "pk dev\n" {
+				t.Fatalf("unexpected version output %q", out.String())
+			}
+		})
+	}
+}
+
+func TestRunRejectsInvalidColorMode(t *testing.T) {
+	err := run([]string{"--color=sometimes", "version"}, &bytes.Buffer{})
+
+	if err == nil {
+		t.Fatal("expected invalid color mode error")
 	}
 }
 
@@ -483,10 +514,10 @@ func TestRunInstallReturnsManagerErrors(t *testing.T) {
 	deps.backgroundErr = errors.New("manager failed")
 	var out bytes.Buffer
 
-	err := run([]string{"install"}, &out)
+	err := run([]string{"install", "--apply"}, &out)
 
-	if err == nil {
-		t.Fatal("expected manager error")
+	if err != deps.backgroundErr {
+		t.Fatalf("expected manager error, got %v", err)
 	}
 }
 
@@ -532,7 +563,7 @@ func TestRunMonitorApplyUsesActiveMode(t *testing.T) {
 func TestNewMonitorReturnsMonitor(t *testing.T) {
 	commandDeps(t)
 
-	monitor := newMonitor(&config.Config{}, monitorOptions{})
+	monitor := newMonitor(&config.Config{}, monitorOptions{}, nil)
 
 	if monitor == nil {
 		t.Fatal("expected monitor")
@@ -802,7 +833,11 @@ func installCommandDeps(t *testing.T, deps *commandTestDeps) {
 	}
 	newProcessKiller = func() killer.Killer { return deps.killer }
 	newDockerClient = func() docker.Client { return deps.docker }
-	newMonitorRunner = func(cfg *config.Config, options monitorOptions) monitorRunner {
+	newMonitorRunner = func(
+		cfg *config.Config,
+		options monitorOptions,
+		logger *slog.Logger,
+	) monitorRunner {
 		deps.cfg = cfg
 		deps.monitorOptions = options
 		return deps.runner
@@ -830,7 +865,7 @@ type savedCommandDeps struct {
 	newAudit         func() (auditStore, error)
 	newKiller        func() killer.Killer
 	newDocker        func() docker.Client
-	newRunner        func(*config.Config, monitorOptions) monitorRunner
+	newRunner        func(*config.Config, monitorOptions, *slog.Logger) monitorRunner
 	newBackground    func() (backgroundManager, error)
 	installSkill     func(string) (string, error)
 	defaultSkillRoot func() (string, error)

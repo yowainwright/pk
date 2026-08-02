@@ -5,17 +5,18 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
-
-	"github.com/charmbracelet/log"
 
 	"github.com/yowainwright/pk/internal/audit"
 	"github.com/yowainwright/pk/internal/cleanup"
 	"github.com/yowainwright/pk/internal/config"
 	"github.com/yowainwright/pk/internal/docker"
+	"github.com/yowainwright/pk/internal/dx"
 	"github.com/yowainwright/pk/internal/killer"
 	"github.com/yowainwright/pk/internal/monitor"
 	"github.com/yowainwright/pk/internal/notify"
@@ -62,14 +63,33 @@ type installOptions struct {
 	apply bool
 }
 
+type globalOptions struct {
+	color dx.ColorMode
+}
+
+type colorArgument struct {
+	value    string
+	consumed int
+	found    bool
+}
+
+type application struct {
+	ui  *dx.UI
+	out io.Writer
+}
+
 var (
 	newProcessLister  = func() process.Lister { return process.NewLister() }
 	newProcessScanner = func(cfg *config.Config, lister process.Lister) processScanner { return scan.New(cfg, lister) }
 	newAuditStore     = func() (auditStore, error) { return audit.DefaultLog() }
 	newProcessKiller  = func() killer.Killer { return killer.New() }
 	newDockerClient   = func() docker.Client { return docker.NewClient() }
-	newMonitorRunner  = func(cfg *config.Config, options monitorOptions) monitorRunner {
-		return newMonitor(cfg, options)
+	newMonitorRunner  = func(
+		cfg *config.Config,
+		options monitorOptions,
+		logger *slog.Logger,
+	) monitorRunner {
+		return newMonitor(cfg, options, logger)
 	}
 	newBackgroundManager = func() (backgroundManager, error) { return service.DefaultManager() }
 	installSkill         = skillinstall.Install
@@ -81,7 +101,6 @@ var (
 )
 
 const (
-	reportTimestamps       = true
 	defaultApply           = false
 	defaultWatch           = false
 	cleanupScopeAll        = cleanupScope("all")
@@ -90,95 +109,138 @@ const (
 )
 
 func main() {
-	err := run(os.Args[1:], os.Stdout)
-	exitOnError(err)
+	app, args, err := newApplication(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+	if err == nil {
+		err = app.run(args)
+	}
+	app.exitOnError(err)
 }
 
 func run(args []string, out io.Writer) error {
-	handled, err := runInformational(args, out)
+	app, commandArgs, err := newApplication(args, strings.NewReader(""), out, io.Discard)
+	if err != nil {
+		return err
+	}
+	return app.run(commandArgs)
+}
+
+func newApplication(
+	args []string,
+	in io.Reader,
+	out io.Writer,
+	errOut io.Writer,
+) (application, []string, error) {
+	commandArgs, options, err := parseGlobalOptions(args)
+	ui := dx.New(dx.Config{
+		In:         in,
+		Out:        out,
+		Err:        errOut,
+		Color:      options.color,
+		Timestamps: true,
+	})
+	return application{ui: ui, out: out}, commandArgs, err
+}
+
+func (a application) run(args []string) error {
+	handled, err := runInformational(args, a.out)
 	if handled {
 		return err
 	}
 	command, commandArgs := splitCommand(args)
-	return dispatch(command, commandArgs, out)
+	return a.dispatch(command, commandArgs)
 }
 
-func dispatch(command string, args []string, out io.Writer) error {
-	handled, err := dispatchPrimary(command, args, out)
+func (a application) dispatch(command string, args []string) error {
+	handled, err := a.dispatchPrimary(command, args)
 	if handled {
 		return err
 	}
-	return dispatchUtility(command, args, out)
+	return a.dispatchUtility(command, args)
 }
 
-func dispatchPrimary(command string, args []string, out io.Writer) (bool, error) {
+func (a application) dispatchPrimary(command string, args []string) (bool, error) {
 	switch command {
 	case "monitor":
-		return true, runMonitor(args)
+		return true, a.runMonitor(args)
 	case "scan":
-		return true, runScan(args, out)
+		return true, a.runScan(args)
 	case "cleanup":
-		return true, runCleanup(args, out)
+		return true, a.runCleanup(args)
 	case "history":
-		return true, runHistory(out)
+		return true, a.runHistory()
 	default:
 		return false, nil
 	}
 }
 
-func dispatchUtility(command string, args []string, out io.Writer) error {
+func (a application) dispatchUtility(command string, args []string) error {
 	switch command {
 	case "install":
-		return runInstall(args, out)
+		return a.runInstall(args)
 	case "uninstall":
-		return runUninstall(out)
+		return a.runUninstall()
 	case "status":
-		return runStatus(out)
+		return a.runStatus()
 	case "skills":
-		return runSkills(args, out)
+		return a.runSkills(args)
 	default:
 		return fmt.Errorf("unknown command %q", command)
 	}
 }
 
-func runMonitor(args []string) error {
+func (a application) runMonitor(args []string) error {
 	cfg, options, err := monitorConfig(args)
 	if err != nil {
 		return err
 	}
-
-	log.SetLevel(log.InfoLevel)
-	log.SetReportTimestamp(reportTimestamps)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	handleShutdownSignal(cancel)
-	m := newMonitorRunner(cfg, options)
+	m := newMonitorRunner(cfg, options, a.ui.Logger())
 	return m.Run(ctx)
 }
 
-func runScan(args []string, out io.Writer) error {
+func (a application) runScan(args []string) error {
 	cfg, err := config.ParseArgs("scan", args)
 	if err != nil {
 		return err
 	}
-	reports, err := scanReports(context.Background(), cfg)
+	var reports []scan.Report
+	err = a.ui.Task(context.Background(), "Scanning processes", func(ctx context.Context) error {
+		var scanErr error
+		reports, scanErr = scanReports(ctx, cfg)
+		return scanErr
+	})
 	if err != nil {
 		return err
 	}
-	return scan.WriteReports(out, reports)
+	return scan.WriteReports(a.out, reports)
 }
 
-func runCleanup(args []string, out io.Writer) error {
+func (a application) runCleanup(args []string) error {
 	cfg, options, err := cleanupConfig(args)
 	if err != nil {
 		return err
 	}
 	if options.watch {
-		return runCleanupWatch(cfg, options, out)
+		return runCleanupWatch(cfg, options, a.out)
 	}
-	return runCleanupOnce(context.Background(), cfg, options, out)
+	return a.runBoundedCleanup(cfg, options)
+}
+
+func (a application) runBoundedCleanup(cfg *config.Config, options cleanupOptions) error {
+	var results cleanupResults
+	label := cleanupTaskLabel(options.apply)
+	err := a.ui.Task(context.Background(), label, func(ctx context.Context) error {
+		var cleanupErr error
+		results, cleanupErr = collectCleanupResults(ctx, cfg, options)
+		return cleanupErr
+	})
+	if err != nil {
+		return err
+	}
+	return writeCleanupResults(a.out, results.processes, results.containers)
 }
 
 func runCleanupOnce(
@@ -187,19 +249,36 @@ func runCleanupOnce(
 	options cleanupOptions,
 	out io.Writer,
 ) error {
-	log, err := newAuditStore()
+	results, err := collectCleanupResults(ctx, cfg, options)
 	if err != nil {
 		return err
+	}
+	return writeCleanupResults(out, results.processes, results.containers)
+}
+
+type cleanupResults struct {
+	processes  []cleanup.Result
+	containers []docker.Result
+}
+
+func collectCleanupResults(
+	ctx context.Context,
+	cfg *config.Config,
+	options cleanupOptions,
+) (cleanupResults, error) {
+	log, err := newAuditStore()
+	if err != nil {
+		return cleanupResults{}, err
 	}
 	results, err := runProcessCleanup(ctx, cfg, options, log)
 	if err != nil {
-		return err
+		return cleanupResults{}, err
 	}
 	containerResults, err := runDockerCleanup(ctx, log, options)
 	if err != nil {
-		return err
+		return cleanupResults{}, err
 	}
-	return writeCleanupResults(out, results, containerResults)
+	return cleanupResults{processes: results, containers: containerResults}, nil
 }
 
 func runProcessCleanup(
@@ -312,19 +391,24 @@ func cleanupLoop(
 	}
 }
 
-func runHistory(out io.Writer) error {
-	log, err := newAuditStore()
+func (a application) runHistory() error {
+	var events []audit.Event
+	err := a.ui.Task(context.Background(), "Loading cleanup history", func(context.Context) error {
+		log, logErr := newAuditStore()
+		if logErr != nil {
+			return logErr
+		}
+		var eventsErr error
+		events, eventsErr = log.Events()
+		return eventsErr
+	})
 	if err != nil {
 		return err
 	}
-	events, err := log.Events()
-	if err != nil {
-		return err
-	}
-	return audit.WriteEvents(out, events)
+	return audit.WriteEvents(a.out, events)
 }
 
-func runInstall(args []string, out io.Writer) error {
+func (a application) runInstall(args []string) error {
 	options, err := parseInstallOptions(args)
 	if err != nil {
 		return err
@@ -332,76 +416,95 @@ func runInstall(args []string, out io.Writer) error {
 	if !options.apply {
 		return fmt.Errorf("install requires --apply to enable destructive background cleanup")
 	}
+	err = a.ui.Task(context.Background(), "Installing background cleanup", installBackground)
+	if err != nil {
+		return err
+	}
+	return a.ui.Value("installed")
+}
+
+func installBackground(context.Context) error {
 	manager, err := newBackgroundManager()
 	if err != nil {
 		return err
 	}
-	if err := manager.Install(); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintln(out, "installed")
-	return err
+	return manager.Install()
 }
 
-func runUninstall(out io.Writer) error {
+func (a application) runUninstall() error {
+	err := a.ui.Task(context.Background(), "Uninstalling background cleanup", uninstallBackground)
+	if err != nil {
+		return err
+	}
+	return a.ui.Value("uninstalled")
+}
+
+func uninstallBackground(context.Context) error {
 	manager, err := newBackgroundManager()
 	if err != nil {
 		return err
 	}
-	if err := manager.Uninstall(); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintln(out, "uninstalled")
-	return err
+	return manager.Uninstall()
 }
 
-func runStatus(out io.Writer) error {
-	manager, err := newBackgroundManager()
+func (a application) runStatus() error {
+	var status string
+	err := a.ui.Task(
+		context.Background(),
+		"Checking background cleanup",
+		func(context.Context) error {
+			manager, managerErr := newBackgroundManager()
+			if managerErr != nil {
+				return managerErr
+			}
+			var statusErr error
+			status, statusErr = manager.Status()
+			return statusErr
+		},
+	)
 	if err != nil {
 		return err
 	}
-	status, err := manager.Status()
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintln(out, status)
-	return err
+	return a.ui.Value(status)
 }
 
-func runSkills(args []string, out io.Writer) error {
+func (a application) runSkills(args []string) error {
 	command, commandArgs := splitCommand(args)
 	switch command {
 	case "install":
-		return runSkillsInstall(commandArgs, out)
+		return a.runSkillsInstall(commandArgs)
 	case "path":
-		return runSkillsPath(out)
+		return a.runSkillsPath()
 	default:
 		return fmt.Errorf("unknown skills command %q", command)
 	}
 }
 
-func runSkillsInstall(args []string, out io.Writer) error {
+func (a application) runSkillsInstall(args []string) error {
 	var root string
 	flags := flag.NewFlagSet("skills install", flag.ContinueOnError)
 	flags.StringVar(&root, "dir", "", "Skills root directory")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	path, err := installSkill(root)
+	var path string
+	err := a.ui.Task(context.Background(), "Installing Codex skill", func(context.Context) error {
+		var installErr error
+		path, installErr = installSkill(root)
+		return installErr
+	})
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(out, path)
-	return err
+	return a.ui.Value(path)
 }
 
-func runSkillsPath(out io.Writer) error {
+func (a application) runSkillsPath() error {
 	root, err := defaultSkillRoot()
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(out, skillinstall.SkillPath(root))
-	return err
+	return a.ui.Value(skillinstall.SkillPath(root))
 }
 
 func scanReports(ctx context.Context, cfg *config.Config) ([]scan.Report, error) {
@@ -480,6 +583,68 @@ func parseInstallOptions(args []string) (installOptions, error) {
 	return options, nil
 }
 
+func parseGlobalOptions(args []string) ([]string, globalOptions, error) {
+	options := globalOptions{color: dx.ColorAuto}
+	commandArgs := make([]string, 0, len(args))
+	return collectGlobalOptions(args, commandArgs, options)
+}
+
+func collectGlobalOptions(
+	args []string,
+	commandArgs []string,
+	options globalOptions,
+) ([]string, globalOptions, error) {
+	if len(args) == 0 {
+		return commandArgs, options, nil
+	}
+	if args[0] == "--" {
+		return append(commandArgs, args...), options, nil
+	}
+	color, err := colorOption(args)
+	if err != nil {
+		return nil, options, err
+	}
+	return collectColorOption(args, commandArgs, options, color)
+}
+
+func collectColorOption(
+	args []string,
+	commandArgs []string,
+	options globalOptions,
+	color colorArgument,
+) ([]string, globalOptions, error) {
+	if !color.found {
+		return collectGlobalOptions(args[1:], append(commandArgs, args[0]), options)
+	}
+	mode, err := dx.ParseColorMode(color.value)
+	if err != nil {
+		return nil, options, err
+	}
+	options.color = mode
+	return collectGlobalOptions(args[color.consumed:], commandArgs, options)
+}
+
+func colorOption(args []string) (colorArgument, error) {
+	value, found := strings.CutPrefix(args[0], "--color=")
+	if found {
+		return colorArgument{value: value, consumed: 1, found: true}, nil
+	}
+	if args[0] != "--color" {
+		return colorArgument{}, nil
+	}
+	if len(args) < 2 {
+		return colorArgument{}, fmt.Errorf("--color requires auto, always, or never")
+	}
+	return colorArgument{value: args[1], consumed: 2, found: true}, nil
+}
+
+func cleanupTaskLabel(apply bool) string {
+	if apply {
+		return "Applying cleanup"
+	}
+	return "Previewing cleanup"
+}
+
 func splitCommand(args []string) (string, []string) {
 	args = trimSeparator(args)
 	if len(args) == 0 {
@@ -503,25 +668,35 @@ func handleSignals(cancel context.CancelFunc) {
 	notifySignal(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		log.Info("Received shutdown signal")
 		cancel()
 	}()
 }
 
-func newMonitor(cfg *config.Config, options monitorOptions) *monitor.Monitor {
+func newMonitor(
+	cfg *config.Config,
+	options monitorOptions,
+	logger *slog.Logger,
+) *monitor.Monitor {
 	lister := newProcessLister()
 	processKiller := newProcessKiller()
-	return monitor.New(cfg, lister, processKiller, notifyKilled, options.apply)
+	monitorConfig := monitor.Options{
+		Apply:  options.apply,
+		Logger: logger,
+	}
+	return monitor.New(cfg, lister, processKiller, notifyKilled, monitorConfig)
 }
 
 func notifyKilled(name string, pid int32) {
 	msg := fmt.Sprintf("Killed %s (PID %d)", name, pid)
-	if err := sendNotification("pk", msg); err != nil {
-		log.Debug("Notification failed", "error", err)
-	}
+	_ = sendNotification("pk", msg)
 }
 
 func exitOnError(err error) {
+	ui := dx.New(dx.Config{Err: os.Stderr, Timestamps: true})
+	application{ui: ui, out: os.Stdout}.exitOnError(err)
+}
+
+func (a application) exitOnError(err error) {
 	if err == nil {
 		return
 	}
@@ -529,7 +704,7 @@ func exitOnError(err error) {
 		return
 	}
 
-	log.Error("pk error", "error", err)
+	a.ui.Logger().Error("pk error", "error", err)
 	exitProcess(1)
 }
 

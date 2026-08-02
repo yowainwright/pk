@@ -1,8 +1,11 @@
 package monitor
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,7 +114,8 @@ func TestCheckPreviewDoesNotKill(t *testing.T) {
 	cfg := applyConfig()
 	cfg.GracePeriod = 0
 	killer := &fakeKiller{}
-	monitor := New(cfg, &fakeLister{}, killer, nil, previewMode)
+	options := Options{Apply: previewMode}
+	monitor := New(cfg, &fakeLister{}, killer, nil, options)
 	monitor.lister = &fakeLister{procs: processes(overCPUProcess())}
 
 	monitor.check(context.Background())
@@ -122,14 +126,35 @@ func TestCheckPreviewDoesNotKill(t *testing.T) {
 	}
 }
 
+func TestCheckPreviewDoesNotLogKillWarning(t *testing.T) {
+	cfg := applyConfig()
+	cfg.GracePeriod = 0
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	options := Options{Apply: previewMode, Logger: logger}
+	monitor := New(cfg, &fakeLister{}, &fakeKiller{}, nil, options)
+	monitor.lister = &fakeLister{procs: processes(overCPUProcess())}
+
+	monitor.check(context.Background())
+	monitor.check(context.Background())
+
+	if !strings.Contains(logs.String(), "Preview - skipping kill") {
+		t.Fatalf("expected preview log, got %q", logs.String())
+	}
+	if strings.Contains(logs.String(), "Killing process") {
+		t.Fatalf("unexpected kill warning %q", logs.String())
+	}
+}
+
 func TestCheckNotifiesAfterKill(t *testing.T) {
 	cfg := applyConfig()
 	cfg.GracePeriod = 0
 	killer := &fakeKiller{}
 	notified := false
+	options := Options{Apply: applyMode}
 	monitor := New(cfg, &fakeLister{}, killer, func(string, int32) {
 		notified = true
-	}, applyMode)
+	}, options)
 	monitor.lister = &fakeLister{procs: processes(overCPUProcess())}
 
 	monitor.check(context.Background())
@@ -145,9 +170,10 @@ func TestCheckDoesNotNotifyWhenKillFails(t *testing.T) {
 	cfg.GracePeriod = 0
 	killer := &fakeKiller{err: errors.New("denied")}
 	notified := false
+	options := Options{Apply: applyMode}
 	monitor := New(cfg, &fakeLister{}, killer, func(string, int32) {
 		notified = true
-	}, applyMode)
+	}, options)
 	monitor.lister = &fakeLister{procs: processes(overCPUProcess())}
 
 	monitor.check(context.Background())
@@ -273,7 +299,8 @@ func testMonitor(cfg *config.Config) *Monitor {
 }
 
 func testMonitorWithKiller(cfg *config.Config, killer *fakeKiller) *Monitor {
-	return New(cfg, &fakeLister{}, killer, nil, applyMode)
+	options := Options{Apply: applyMode}
+	return New(cfg, &fakeLister{}, killer, nil, options)
 }
 
 func applyConfig() *config.Config {
