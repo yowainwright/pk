@@ -1,0 +1,89 @@
+version: 2
+
+before:
+  hooks:
+    - go mod verify
+
+builds:
+  - id: pk
+    main: ./cmd/pk
+    binary: pk
+    env:
+      - CGO_ENABLED=0
+      - GOTOOLCHAIN=local
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version=v{{ .Version }}
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: pk
+    formats: [binary]
+    name_template: "pk-{{ .Os }}-{{ .Arch }}"
+
+checksum:
+  name_template: SHA256SUMS
+  algorithm: sha256
+
+signs:
+  - cmd: cosign
+    args:
+      - sign-blob
+      - --yes
+      - --bundle=${signature}
+      - ${artifact}
+    artifacts: checksum
+    signature: ${artifact}.bundle
+
+release:
+  draft: true
+  use_existing_draft: true
+  replace_existing_artifacts: true
+  mode: keep-existing
+  prerelease: auto
+  make_latest: false
+
+homebrew_casks:
+  - name: pk
+    ids:
+      - pk
+    binaries:
+      - pk
+    directory: Casks
+    repository:
+      owner: yowainwright
+      name: homebrew-tap
+      branch: main
+    skip_upload: true
+    homepage: https://github.com/yowainwright/pk
+    description: Safe-by-default local development process cleanup
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            binary = Dir["#{staged_path}/pk-darwin-*"].first
+            if binary
+              quarantine = system_command "/usr/bin/xattr",
+                                          args: ["-p", "com.apple.quarantine", binary],
+                                          must_succeed: false,
+                                          print_stderr: false
+              system_command "/usr/bin/xattr", args: ["-d", "com.apple.quarantine", binary] if quarantine.success?
+            end
+          end
+    caveats: |
+      The macOS binary is checksum-verified but not notarized. This cask
+      removes quarantine only from the staged pk binary.
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^chore:"
+      - "^docs:"
+      - "^test:"

@@ -21,6 +21,19 @@ func TestInstallWritesSkillFile(t *testing.T) {
 	if !strings.Contains(string(data), "name: pk") {
 		t.Fatalf("expected pk skill, got %s", string(data))
 	}
+	assertSkillMode(t, filepath.Dir(path), skillDirMode)
+	assertSkillMode(t, path, skillFileMode)
+}
+
+func assertSkillMode(t *testing.T, path string, expected os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if info.Mode().Perm() != expected {
+		t.Fatalf("%s mode: got %o, want %o", path, info.Mode().Perm(), expected)
+	}
 }
 
 func TestInstallUsesDefaultRoot(t *testing.T) {

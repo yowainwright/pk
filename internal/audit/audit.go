@@ -15,6 +15,8 @@ import (
 const (
 	DefaultRetention       = 48 * time.Hour
 	DefaultMaxBytes  int64 = 10 * 1024 * 1024
+	privateDirMode         = 0o700
+	privateFileMode        = 0o600
 )
 
 type Event struct {
@@ -118,17 +120,24 @@ func (l *Log) prune(events []Event) []Event {
 }
 
 func (l *Log) write(events []Event) error {
-	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
+	if err := ensurePrivateDir(filepath.Dir(l.path)); err != nil {
 		return fmt.Errorf("creating audit dir: %w", err)
 	}
 	data, err := encodeEvents(events)
 	if err != nil {
 		return err
 	}
-	if err := writeAtomicFile(l.path, data, 0o644); err != nil {
+	if err := writeAtomicFile(l.path, data, privateFileMode); err != nil {
 		return fmt.Errorf("writing audit log: %w", err)
 	}
 	return nil
+}
+
+func ensurePrivateDir(path string) error {
+	if err := os.MkdirAll(path, privateDirMode); err != nil {
+		return err
+	}
+	return os.Chmod(path, privateDirMode)
 }
 
 func writeAtomicFile(path string, data []byte, perm os.FileMode) error {

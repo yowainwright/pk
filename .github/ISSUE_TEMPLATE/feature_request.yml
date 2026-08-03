@@ -1,0 +1,68 @@
+name: Feature Request
+description: Suggest a focused improvement to pk.
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the workflow limitation or safety concern.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the expected command, prompt, or behavior.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - scan
+        - cleanup
+        - monitor
+        - Docker
+        - background service
+        - prompts or terminal output
+        - install or uninstall
+        - release or packaging
+        - documentation
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: user-flow
+    attributes:
+      label: Desired user flow
+      description: Show the command and expected output or interaction.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety and dependency impact
+      description: Note destructive behavior, permissions, network access, or dependencies.
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Project constraints
+      options:
+        - label: The proposal preserves preview-first behavior.
+          required: true
+        - label: The proposal can avoid new runtime dependencies, or explains why one is needed.
+          required: true
+        - label: I searched existing issues.
+          required: true

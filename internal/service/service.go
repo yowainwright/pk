@@ -148,11 +148,14 @@ func (m *Manager) installed() bool {
 }
 
 func ensureDir(path string) error {
-	return os.MkdirAll(path, 0o755)
+	return os.MkdirAll(path, 0o750)
 }
 
 func writeFile(path string, data []byte) error {
-	return os.WriteFile(path, data, 0o644)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
 
 func removeFile(path string) error {

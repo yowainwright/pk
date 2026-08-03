@@ -1,41 +1,82 @@
-name: ci
+name: CI
 
 on:
   pull_request:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
+
+permissions: {}
 
 jobs:
-  build:
+  quality:
+    name: Build, Lint, and Test
     runs-on: ubuntu-latest
-
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
 
       - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
         with:
-          go-version: "1.26"
+          go-version: "1.26.5"
+          cache: true
 
-      - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
-
-      - name: Build custom linter
-        run: golangci-lint custom
+      - name: Check formatting
+        run: |
+          files="$(gofmt -l .)"
+          if [[ -n "$files" ]]; then
+            printf 'Unformatted files:\n%s\n' "$files" >&2
+            exit 1
+          fi
 
       - name: Lint
-        run: ./bin/legibility-golangci-lint run ./...
-
-      - name: Format
-        run: ./bin/legibility-golangci-lint fmt --diff ./...
+        run: sh scripts/lint.sh
 
       - name: Build
-        run: go build -v ./...
+        run: CGO_ENABLED=0 go build -trimpath ./...
 
       - name: Test
-        run: go test -race -v ./...
+        run: |
+          go test -race -covermode=atomic \
+            -coverpkg=./... -coverprofile=coverage.out ./...
+
+      - name: Test release scripts
+        run: bash tests/scripts/release_test.sh
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
+        with:
+          disable_search: true
+          fail_ci_if_error: false
+          files: coverage.out
+          flags: unit
+          name: unit
+          use_oidc: true
+
+  security:
+    name: Security Scans
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: "1.26.5"
+          cache: true
+
+      - name: Run security scans
+        run: sh scripts/security.sh
 
   cli-e2e:
     name: CLI E2E (${{ matrix.os }})
@@ -45,32 +86,69 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
 
       - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
         with:
-          go-version: "1.26"
+          go-version: "1.26.5"
+          cache: true
 
-      - name: Run CLI E2E tests
+      - name: Run CLI end-to-end tests
         run: go test -tags=e2e ./tests/e2e -v
 
   process-e2e:
     name: Isolated Process E2E
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
 
       - name: Set up Go
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
         with:
-          go-version: "1.26"
+          go-version: "1.26.5"
+          cache: true
 
-      - name: Run isolated process cleanup E2E
+      - name: Run isolated process end-to-end tests
         run: ./tests/e2e/test-process-cleanup.sh
+
+  release-snapshot:
+    name: Release Snapshot
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: "1.26.5"
+          cache: true
+
+      - name: Check GoReleaser configuration
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94
+        with:
+          version: v2.17.0
+          args: check
+
+      - name: Build release snapshot
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94
+        with:
+          version: v2.17.0
+          args: release --snapshot --clean --skip=sign
+
+      - name: Verify generated cask
+        run: sh scripts/verify-homebrew-cask.sh

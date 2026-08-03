@@ -2,36 +2,66 @@ name: Release Please
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      release_as:
+        description: Exact semantic version for the release PR
+        required: false
+        type: string
 
-permissions:
-  actions: write
-  contents: write
-  pull-requests: write
+permissions: {}
 
 concurrency:
   group: release-please-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  release_please:
-    name: Release Please
+  release-please:
+    name: Prepare Release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     env:
       RELEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
     steps:
-      - name: Create or update release PR
+      - name: Validate requested version
+        if: ${{ inputs.release_as != '' }}
+        env:
+          RELEASE_AS: ${{ inputs.release_as }}
+        run: |
+          pattern='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if [[ ! "$RELEASE_AS" =~ $pattern ]]; then
+            echo "release_as must be semantic version without a v prefix" >&2
+            exit 1
+          fi
+
+      - name: Create or update release pull request
         id: release
         uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071
         with:
           token: ${{ env.RELEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          release-as: ${{ inputs.release_as }}
 
-      - name: Dispatch release validation
-        if: ${{ steps.release.outputs.release_created == 'true' }}
+  dispatch:
+    name: Dispatch Release Validation
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    needs: release-please
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch non-canceling publisher
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ steps.release.outputs.tag_name }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         run: gh workflow run release.yml --ref main --field tag_name="$TAG_NAME"

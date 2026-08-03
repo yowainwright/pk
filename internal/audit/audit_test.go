@@ -113,6 +113,28 @@ func TestRecordAddsTimestamp(t *testing.T) {
 	}
 }
 
+func TestRecordUsesPrivatePermissions(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pk")
+	path := filepath.Join(dir, "events.jsonl")
+	log := New(path)
+
+	recordTestEvent(t, log, Event{Name: "node"})
+
+	assertAuditMode(t, dir, privateDirMode)
+	assertAuditMode(t, path, privateFileMode)
+}
+
+func assertAuditMode(t *testing.T, path string, expected os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if info.Mode().Perm() != expected {
+		t.Fatalf("%s mode: got %o, want %o", path, info.Mode().Perm(), expected)
+	}
+}
+
 func TestEventsReturnsEmptyForMissingLog(t *testing.T) {
 	log := New(filepath.Join(t.TempDir(), "missing.jsonl"))
 

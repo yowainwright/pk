@@ -22,6 +22,7 @@ func TestInstallLaunchdWritesPlistAndStartsService(t *testing.T) {
 	assertContains(t, data, "com.yowainwright.pk")
 	assertContains(t, data, "/bin/pk")
 	assertContains(t, data, "--watch")
+	assertServiceMode(t, manager)
 	assertCommands(t, runner, "launchctl bootout")
 	assertCommands(t, runner, "launchctl bootstrap")
 	assertCommands(t, runner, "launchctl kickstart")
@@ -46,8 +47,20 @@ func TestInstallSystemdWritesUnitAndStartsService(t *testing.T) {
 
 	data := readServiceFile(t, manager)
 	assertContains(t, data, `ExecStart="/bin/pk" "cleanup" "--apply" "--watch"`)
+	assertServiceMode(t, manager)
 	assertCommands(t, runner, "systemctl --user daemon-reload")
 	assertCommands(t, runner, "systemctl --user enable --now pk.service")
+}
+
+func assertServiceMode(t *testing.T, manager *Manager) {
+	t.Helper()
+	info, err := os.Stat(manager.servicePath())
+	if err != nil {
+		t.Fatalf("stat service file: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("service file mode: got %o, want 600", info.Mode().Perm())
+	}
 }
 
 func TestInstallSystemdReturnsReloadErrors(t *testing.T) {
