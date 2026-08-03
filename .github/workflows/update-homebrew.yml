@@ -79,7 +79,7 @@ jobs:
           test -s "$cask_file"
           ruby -c "$cask_file"
           grep -Fq "version \"$version\"" "$cask_file"
-          grep -Fq "/releases/download/$TAG_NAME/" "$cask_file"
+          grep -Fq '/releases/download/v#{version}/' "$cask_file"
 
       - name: Verify tap credentials
         env:
