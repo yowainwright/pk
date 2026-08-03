@@ -40,6 +40,7 @@ jobs:
       - name: Verify draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ inputs.tag_name }}
         run: |
           is_draft="$(gh release view "$TAG_NAME" --json isDraft --jq .isDraft)"

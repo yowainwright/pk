@@ -63,5 +63,6 @@ jobs:
       - name: Dispatch non-canceling publisher
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         run: gh workflow run release.yml --ref main --field tag_name="$TAG_NAME"
