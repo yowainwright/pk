@@ -156,3 +156,11 @@ Run the same lint checks CI runs:
 `./bin/legibility-golangci-lint` with
 `github.com/yowainwright/golangci-lint-legibility`. `.golangci.yml` configures
 the rules that binary runs.
+
+## Release
+
+Conventional commits merged to `main` feed the Release Please PR. Merging that
+PR creates a tagged draft and dispatches the non-canceling release workflow.
+The workflow runs tests, builds and verifies every asset, publishes the draft,
+then updates Homebrew. Draft publication and Homebrew updates can be rerun
+independently with their workflow dispatch inputs.
