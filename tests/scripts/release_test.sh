@@ -106,6 +106,15 @@ test_release_pr_dispatches_ci() (
   grep -Fxq "$expected" "$log_path"
 )
 
+test_execute_aborts_without_release_pr() (
+  release_dispatch_pr() { :; }
+  release_require_pr() { release_fail "Timed out waiting for the release pull request"; }
+  release_check_pr() { return 94; }
+  if release_execute 10 >/dev/null 2>&1; then
+    return 1
+  fi
+)
+
 run_test() {
   local name="$1"
   if "$name"; then
@@ -123,7 +132,8 @@ for test_name in \
   test_dry_run_does_not_dispatch \
   test_unknown_option_fails \
   test_checksum_signature_policy \
-  test_release_pr_dispatches_ci; do
+  test_release_pr_dispatches_ci \
+  test_execute_aborts_without_release_pr; do
   run_test "$test_name" || ((failures += 1))
 done
 
