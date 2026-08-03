@@ -7,7 +7,7 @@ Safe-by-default local process cleanup CLI for agent and development work.
 Install the latest release with Homebrew:
 
 ```sh
-brew install yowainwright/tap/pk
+brew install --cask yowainwright/tap/pk
 ```
 
 Or install with Go 1.26 or newer:
@@ -106,18 +106,30 @@ bundled skill to `$PK_SKILLS_DIR`, `$CODEX_HOME/skills`, or `~/.codex/skills`.
 Running `pk` without a command prints help. Every destructive mode requires an
 explicit `--apply` flag.
 
+Color is automatic on interactive terminals and can be controlled globally:
+
+```sh
+pk --color=always scan
+pk cleanup --color=never
+```
+
+`--color` accepts `auto`, `always`, or `never`. Rich output is disabled for
+pipes, CI, `TERM=dumb`, and `NO_COLOR`. Data remains plain on stdout; prompts,
+loaders, completion shimmer, and structured status output use stderr. The UI
+layer is implemented with the Go standard library and adds no dependencies.
+
 ## Development
 
 <!-- local Go and legibility lint commands derived from go.mod, .mise.toml, .custom-gcl.yml, .golangci.yml, and .github/workflows/ci.yml -->
 
-This repository uses Go 1.26 and a custom `golangci-lint` binary with the
-`legibility` plugin.
+This repository pins Go, GoReleaser, and `svu` in `.mise.toml` and the custom
+linter in `.custom-gcl.yml`. Install the mise-managed tools with `mise install`.
 
 Build and test:
 
 ```sh
-go test ./...
-go build ./...
+mise run build
+mise run check
 ```
 
 Run black-box CLI tests plus isolated process termination in Docker:
@@ -126,21 +138,43 @@ Run black-box CLI tests plus isolated process termination in Docker:
 ./tests/e2e/test.sh
 ```
 
-Build the custom linter locally:
+Run the same pinned custom lint checks CI runs:
 
 ```sh
-go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
-golangci-lint custom
-```
-
-Run the same lint checks CI runs:
-
-```sh
-./bin/legibility-golangci-lint run ./...
-./bin/legibility-golangci-lint fmt --diff ./...
+mise run lint
 ```
 
 `.custom-gcl.yml` configures `golangci-lint custom` to build
 `./bin/legibility-golangci-lint` with
 `github.com/yowainwright/golangci-lint-legibility`. `.golangci.yml` configures
 the rules that binary runs.
+
+## Release
+
+Start an interactive release from a clean, synchronized `main` branch:
+
+```sh
+mise run release
+```
+
+`svu` derives the recommended version from conventional commits and supplies
+patch, minor, major, release-candidate, and custom choices. The command runs the
+complete release preview, opens the exact Release Please PR, dispatches and
+waits for its CI, asks before merging, and follows publication to completion.
+Preview without changing GitHub state with
+`bash scripts/release.sh --dry-run`.
+
+Release Please owns the changelog, version commit, tag, and draft release.
+GoReleaser builds four binaries, generates checksums and a Homebrew cask, and
+signs the checksum with keyless cosign. The non-canceling publisher verifies
+the draft, assets, signature, and generated cask before publication. Stable
+releases update `yowainwright/homebrew-tap`; prereleases do not.
+
+## Contributing and Support
+
+See the [contribution guide], [support guide], and [security policy]. Report
+vulnerabilities privately through GitHub Security Advisories.
+
+[contribution guide]: .github/CONTRIBUTING.md
+[security policy]: .github/SECURITY.md
+[support guide]: .github/SUPPORT.md

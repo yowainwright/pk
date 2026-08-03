@@ -1,10 +1,14 @@
-name: Update Homebrew Formula
+name: Update Homebrew Cask
 
 on:
   workflow_call:
     inputs:
       tag_name:
-        description: GitHub release tag containing pk binaries
+        description: Published stable release tag
+        required: true
+        type: string
+      artifact_name:
+        description: Generated cask artifact from the caller
         required: true
         type: string
     secrets:
@@ -13,119 +17,113 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: GitHub release tag containing pk binaries
+        description: Published stable release tag
         required: true
         type: string
 
-jobs:
-  update-formula:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout homebrew-tap repo
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: yowainwright/homebrew-tap
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+permissions: {}
 
-      - name: Get release info
-        id: release
+concurrency:
+  group: update-homebrew-pk
+  cancel-in-progress: false
+
+jobs:
+  update-cask:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Validate stable tag
         env:
-          TAG: ${{ inputs.tag_name }}
+          TAG_NAME: ${{ inputs.tag_name }}
         run: |
-          TAG_PATTERN='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
-          if [[ ! "$TAG" =~ $TAG_PATTERN ]]; then
-            echo "tag_name must be a v-prefixed semantic version" >&2
+          pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if [[ ! "$TAG_NAME" =~ $pattern ]]; then
+            echo "tag_name must be a stable v-prefixed semantic version" >&2
             exit 1
           fi
 
-          VERSION="${TAG#v}"
-          {
-            printf 'version=%s\n' "$VERSION"
-            printf 'tag=%s\n' "$TAG"
-          } >> "$GITHUB_OUTPUT"
+      - name: Download cask from caller
+        if: ${{ inputs.artifact_name != '' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: generated
 
-      - name: Download release assets and calculate SHA256
-        id: checksums
+      - name: Find release artifact
+        if: ${{ inputs.artifact_name == '' }}
         env:
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ inputs.tag_name }}
         run: |
-          REPO="yowainwright/pk"
+          artifact_name="homebrew-pk-$TAG_NAME"
+          endpoint="repos/$GITHUB_REPOSITORY/actions/artifacts"
+          query='.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .id'
+          artifact_id="$(gh api --method GET "$endpoint" -f name="$artifact_name" --jq "$query")"
+          if [[ -z "$artifact_id" || "$artifact_id" == "null" ]]; then
+            echo "No retained cask artifact found for $TAG_NAME" >&2
+            exit 1
+          fi
+          gh api "$endpoint/$artifact_id/zip" > artifact.zip
+          mkdir generated
+          unzip -q artifact.zip -d generated
 
-          curl --fail --location --show-error --silent -o pk-darwin-arm64 "https://github.com/$REPO/releases/download/$RELEASE_TAG/pk-darwin-arm64"
-          SHA_DARWIN_ARM64=$(sha256sum pk-darwin-arm64 | cut -d' ' -f1)
-
-          curl --fail --location --show-error --silent -o pk-darwin-amd64 "https://github.com/$REPO/releases/download/$RELEASE_TAG/pk-darwin-amd64"
-          SHA_DARWIN_AMD64=$(sha256sum pk-darwin-amd64 | cut -d' ' -f1)
-
-          curl --fail --location --show-error --silent -o pk-linux-arm64 "https://github.com/$REPO/releases/download/$RELEASE_TAG/pk-linux-arm64"
-          SHA_LINUX_ARM64=$(sha256sum pk-linux-arm64 | cut -d' ' -f1)
-
-          curl --fail --location --show-error --silent -o pk-linux-amd64 "https://github.com/$REPO/releases/download/$RELEASE_TAG/pk-linux-amd64"
-          SHA_LINUX_AMD64=$(sha256sum pk-linux-amd64 | cut -d' ' -f1)
-
-          {
-            echo "sha_darwin_arm64=$SHA_DARWIN_ARM64"
-            echo "sha_darwin_amd64=$SHA_DARWIN_AMD64"
-            echo "sha_linux_arm64=$SHA_LINUX_ARM64"
-            echo "sha_linux_amd64=$SHA_LINUX_AMD64"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Update formula
+      - name: Verify generated cask
         env:
-          FORMULA_VERSION: ${{ steps.release.outputs.version }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
-          SHA_DARWIN_ARM64: ${{ steps.checksums.outputs.sha_darwin_arm64 }}
-          SHA_DARWIN_AMD64: ${{ steps.checksums.outputs.sha_darwin_amd64 }}
-          SHA_LINUX_ARM64: ${{ steps.checksums.outputs.sha_linux_arm64 }}
-          SHA_LINUX_AMD64: ${{ steps.checksums.outputs.sha_linux_amd64 }}
+          TAG_NAME: ${{ inputs.tag_name }}
         run: |
-          mkdir -p Formula
-          cat > Formula/pk.rb << FORMULA
-          class Pk < Formula
-            desc "Safe-by-default local development process cleanup"
-            homepage "https://github.com/yowainwright/pk"
-            version "$FORMULA_VERSION"
-            license "MIT"
+          cask_file="generated/pk.rb"
+          version="${TAG_NAME#v}"
+          test -s "$cask_file"
+          ruby -c "$cask_file"
+          grep -Fq "version \"$version\"" "$cask_file"
+          grep -Fq "/releases/download/$TAG_NAME/" "$cask_file"
 
-            on_macos do
-              if Hardware::CPU.arm?
-                url "https://github.com/yowainwright/pk/releases/download/$RELEASE_TAG/pk-darwin-arm64"
-                sha256 "$SHA_DARWIN_ARM64"
-              else
-                url "https://github.com/yowainwright/pk/releases/download/$RELEASE_TAG/pk-darwin-amd64"
-                sha256 "$SHA_DARWIN_AMD64"
-              end
-            end
+      - name: Verify tap credentials
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          can_push="$(gh api repos/yowainwright/homebrew-tap --jq '.permissions.push')"
+          if [[ "$can_push" != "true" ]]; then
+            echo "HOMEBREW_TAP_TOKEN cannot update yowainwright/homebrew-tap" >&2
+            exit 1
+          fi
 
-            on_linux do
-              if Hardware::CPU.arm?
-                url "https://github.com/yowainwright/pk/releases/download/$RELEASE_TAG/pk-linux-arm64"
-                sha256 "$SHA_LINUX_ARM64"
-              else
-                url "https://github.com/yowainwright/pk/releases/download/$RELEASE_TAG/pk-linux-amd64"
-                sha256 "$SHA_LINUX_AMD64"
-              end
-            end
+      - name: Install released cask
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          brew install --cask "$PWD/generated/pk.rb"
+          test "$(pk --version)" = "pk $TAG_NAME"
+          brew uninstall --cask pk
 
-            def install
-              bin.install Dir["pk-*"].first => "pk"
-            end
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          repository: yowainwright/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
 
-            test do
-              assert_match "pk", shell_output("#{bin}/pk --version")
-            end
-          end
-          FORMULA
+      - name: Update cask
+        run: |
+          mkdir -p tap/Casks
+          cp generated/pk.rb tap/Casks/pk.rb
+          git -C tap rm --ignore-unmatch Formula/pk.rb
+          ruby -c tap/Casks/pk.rb
 
       - name: Commit and push
         env:
-          FORMULA_VERSION: ${{ steps.release.outputs.version }}
+          TAG_NAME: ${{ inputs.tag_name }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/pk.rb
-          if git diff --cached --quiet; then
+          version="${TAG_NAME#v}"
+          git -C tap config user.name "github-actions[bot]"
+          git -C tap config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C tap add Casks/pk.rb
+          if git -C tap diff --cached --quiet; then
             exit 0
           fi
-          git commit -m "Update pk to $FORMULA_VERSION"
-          git push
+          git -C tap commit -m "Update pk to $version"
+          git -C tap push

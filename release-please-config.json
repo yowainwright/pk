@@ -2,6 +2,8 @@
   "include-component-in-tag": false,
   "packages": {
     ".": {
+      "draft": true,
+      "force-tag-creation": true,
       "release-type": "go",
       "package-name": "pk",
       "pull-request-title-pattern": "chore: release ${version}"

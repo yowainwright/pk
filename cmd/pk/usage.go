@@ -2,9 +2,10 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"runtime/debug"
 	"strings"
+
+	"github.com/yowainwright/pk/internal/dx"
 )
 
 const rootUsage = `pk safely previews local process cleanup by default.
@@ -23,6 +24,9 @@ Commands:
   skills install       Install the bundled Codex skill
   skills path          Print the skill installation path
   version              Print the version
+
+Global options:
+  --color MODE         Set color to auto, always, or never
 
 Destructive commands require --apply. Run "pk help <command>" for details.
 `
@@ -56,20 +60,20 @@ const skillsUsage = `Usage:
   pk skills path
 `
 
-func runInformational(args []string, out io.Writer) (bool, error) {
+func runInformational(args []string, ui *dx.UI) (bool, error) {
 	if isVersionCommand(args) {
-		return true, writeVersion(out)
+		return true, writeVersion(ui)
 	}
 	topic, requested := helpTopic(args)
 	if !requested {
 		return false, nil
 	}
-	return true, writeUsage(out, topic)
+	return true, writeUsage(ui, topic)
 }
 
-func writeVersion(out io.Writer) error {
-	_, err := fmt.Fprintln(out, "pk", displayVersion())
-	return err
+func writeVersion(ui *dx.UI) error {
+	value := fmt.Sprintf("pk %s", displayVersion())
+	return ui.Value(value)
 }
 
 func displayVersion() string {
@@ -105,12 +109,28 @@ func helpTopic(args []string) (string, bool) {
 	if args[0] == "help" {
 		return strings.Join(args[1:], " "), true
 	}
-	for index, arg := range args {
+	if !hasHelpFlag(args) {
+		return "", false
+	}
+	return strings.Join(leadingCommand(args), " "), true
+}
+
+func hasHelpFlag(args []string) bool {
+	for _, arg := range args {
 		if isHelpFlag(arg) {
-			return strings.Join(args[:index], " "), true
+			return true
 		}
 	}
-	return "", false
+	return false
+}
+
+func leadingCommand(args []string) []string {
+	for index, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			return args[:index]
+		}
+	}
+	return args
 }
 
 func isHelpFlag(arg string) bool {
@@ -119,13 +139,12 @@ func isHelpFlag(arg string) bool {
 	return isShortHelp || isLongHelp
 }
 
-func writeUsage(out io.Writer, topic string) error {
+func writeUsage(ui *dx.UI, topic string) error {
 	usage, ok := usageForTopic(topic)
 	if !ok {
 		return fmt.Errorf("unknown help topic %q", topic)
 	}
-	_, err := fmt.Fprint(out, usage)
-	return err
+	return ui.Write(usage)
 }
 
 func usageForTopic(topic string) (string, bool) {

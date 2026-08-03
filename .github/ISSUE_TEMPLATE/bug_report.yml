@@ -1,0 +1,96 @@
+name: Bug Report
+description: Report a reproducible problem in pk.
+title: "bug: "
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: pk version
+      description: Run `pk --version`.
+      placeholder: v1.0.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Install method
+      options:
+        - Homebrew
+        - go install
+        - source build
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: |
+        - OS: macOS 15 or Ubuntu 24.04
+        - Architecture: arm64 or amd64
+        - Shell: zsh or bash
+        - Docker version, if relevant
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: Include the exact command and whether `--apply` was used.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output or logs
+      description: Remove tokens, private paths, process arguments, and unrelated personal data.
+      render: text
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - scan
+        - cleanup
+        - monitor
+        - Docker
+        - background service
+        - prompts or terminal output
+        - install or uninstall
+        - release or packaging
+        - documentation
+        - other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues.
+          required: true
+        - label: I removed sensitive information from the report.
+          required: true

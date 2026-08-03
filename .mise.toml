@@ -1,2 +1,93 @@
 [tools]
-go = "1.26"
+go = "1.26.5"
+goreleaser = "2.17.0"
+svu = "3.4.1"
+
+[env]
+GOFLAGS = "-mod=readonly"
+
+[tasks.build]
+description = "Build pk"
+run = "CGO_ENABLED=0 go build -trimpath -o bin/pk ./cmd/pk"
+
+[tasks.fmt]
+description = "Format Go code"
+run = "gofmt -w ."
+
+[tasks.fmt-check]
+description = "Check Go formatting"
+run = '''
+files="$(gofmt -l .)"
+test -z "$files" || {
+  printf 'Run mise run fmt for:\n%s\n' "$files" >&2
+  exit 1
+}
+'''
+
+[tasks.lint]
+description = "Run Go vet and the custom linter"
+run = "sh scripts/lint.sh"
+
+[tasks.test]
+description = "Run race-enabled tests"
+run = "go test -race ./..."
+
+[tasks.test-e2e]
+description = "Run CLI end-to-end tests"
+run = "go test -tags=e2e ./tests/e2e -v"
+
+[tasks.test-process-e2e]
+description = "Run isolated process cleanup tests"
+run = "./tests/e2e/test-process-cleanup.sh"
+
+[tasks.test-scripts]
+description = "Run release script tests"
+run = "bash tests/scripts/release_test.sh"
+
+[tasks.security]
+description = "Run vulnerability and source security scans"
+run = "sh scripts/security.sh"
+
+[tasks.release-check]
+description = "Validate GoReleaser configuration"
+run = "goreleaser check"
+
+[tasks.release-snapshot]
+description = "Build release artifacts without publishing"
+run = "goreleaser release --snapshot --clean --skip=sign"
+
+[tasks.release-verify]
+description = "Verify snapshot assets and Homebrew cask"
+run = "sh scripts/verify-homebrew-cask.sh"
+
+[tasks.test-homebrew-cask]
+description = "Install the generated cask from local artifacts"
+run = "sh tests/scripts/homebrew_cask_test.sh"
+
+[tasks.check]
+description = "Run local code checks"
+run = '''
+mise run fmt-check
+mise run lint
+mise run test
+mise run test-scripts
+'''
+
+[tasks.release-preview]
+description = "Validate the complete release without publishing"
+run = '''
+mise run check
+mise run test-e2e
+mise run test-process-e2e
+mise run security
+mise run release-check
+mise run release-snapshot
+mise run release-verify
+if [ "$(uname -s)" = "Darwin" ]; then
+  mise run test-homebrew-cask
+fi
+'''
+
+[tasks.release]
+description = "Prepare, validate, and publish a prompted release"
+run = "bash scripts/release.sh"

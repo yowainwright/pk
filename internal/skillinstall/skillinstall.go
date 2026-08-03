@@ -8,7 +8,11 @@ import (
 	"github.com/yowainwright/pk/skills"
 )
 
-const skillName = "pk"
+const (
+	skillName     = "pk"
+	skillDirMode  = 0o700
+	skillFileMode = 0o600
+)
 
 func DefaultRoot() (string, error) {
 	if override := os.Getenv("PK_SKILLS_DIR"); override != "" {
@@ -34,13 +38,23 @@ func Install(root string) (string, error) {
 		root = defaultRoot
 	}
 	path := SkillPath(root)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), skillDirMode); err != nil {
 		return "", fmt.Errorf("creating skill dir: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(skills.PKSkill), 0o644); err != nil {
+	if err := writeSkill(path); err != nil {
 		return "", fmt.Errorf("writing skill: %w", err)
 	}
 	return path, nil
+}
+
+func writeSkill(path string) error {
+	if err := os.Chmod(filepath.Dir(path), skillDirMode); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(skills.PKSkill), skillFileMode); err != nil {
+		return err
+	}
+	return os.Chmod(path, skillFileMode)
 }
 
 func SkillPath(root string) string {

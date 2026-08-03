@@ -2,10 +2,9 @@ package monitor
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
-
-	"github.com/charmbracelet/log"
 
 	"github.com/yowainwright/pk/internal/config"
 	"github.com/yowainwright/pk/internal/killer"
@@ -18,12 +17,18 @@ type offense struct {
 	proc      process.Process
 }
 
+type Options struct {
+	Apply  bool
+	Logger *slog.Logger
+}
+
 type Monitor struct {
 	cfg    *config.Config
 	lister process.Lister
 	killer killer.Killer
-	notify func(name string, pid int32)
+	notify func(name string, pid int32) error
 	apply  bool
+	logger *slog.Logger
 
 	mu       sync.Mutex
 	offenses map[int32]*offense
@@ -33,17 +38,25 @@ func New(
 	cfg *config.Config,
 	lister process.Lister,
 	k killer.Killer,
-	notify func(string, int32),
-	apply bool,
+	notify func(string, int32) error,
+	options Options,
 ) *Monitor {
 	return &Monitor{
 		cfg:      cfg,
 		lister:   lister,
 		killer:   k,
 		notify:   notify,
-		apply:    apply,
+		apply:    options.Apply,
+		logger:   monitorLogger(options.Logger),
 		offenses: make(map[int32]*offense),
 	}
+}
+
+func monitorLogger(logger *slog.Logger) *slog.Logger {
+	if logger != nil {
+		return logger
+	}
+	return slog.New(slog.DiscardHandler)
 }
 
 func (m *Monitor) Run(ctx context.Context) error {
@@ -56,7 +69,7 @@ func (m *Monitor) Run(ctx context.Context) error {
 }
 
 func (m *Monitor) logStart() {
-	log.Info("Monitoring started",
+	m.logger.Info("Monitoring started",
 		"cpu", m.cfg.CPUThreshold,
 		"mem_mb", m.cfg.MemoryThreshold,
 		"interval", m.cfg.Interval,
@@ -69,7 +82,7 @@ func (m *Monitor) runLoop(ctx context.Context, ticks <-chan time.Time) error {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Info("Shutting down monitor")
+			m.logger.Info("Shutting down monitor")
 			return ctx.Err()
 		case <-ticks:
 			m.check(ctx)
@@ -80,7 +93,7 @@ func (m *Monitor) runLoop(ctx context.Context, ticks <-chan time.Time) error {
 func (m *Monitor) check(ctx context.Context) {
 	procs, err := m.lister.List(ctx)
 	if err != nil {
-		log.Error("Failed to list processes", "error", err)
+		m.logger.Error("Failed to list processes", "error", err)
 		return
 	}
 
@@ -178,7 +191,7 @@ func (m *Monitor) recordOffense(p process.Process) {
 		firstSeen: time.Now(),
 		proc:      p,
 	}
-	log.Warn("Process exceeding threshold",
+	m.logger.Warn("Process exceeding threshold",
 		"pid", p.PID,
 		"name", p.Name,
 		"cpu", p.CPUPercent,
@@ -192,23 +205,22 @@ func (m *Monitor) killProcess(
 	descendants []process.Process,
 	duration time.Duration,
 ) {
-	m.logKill(p, duration)
-
 	if !m.apply {
 		m.logPreview(p)
 		return
 	}
+	m.logKill(p, duration)
 
 	if !m.killTreeAndLog(ctx, p, descendants) {
 		return
 	}
 
-	log.Info("Process terminated", "pid", p.PID, "name", p.Name)
+	m.logger.Info("Process terminated", "pid", p.PID, "name", p.Name)
 	m.notifyKilled(p)
 }
 
 func (m *Monitor) logPreview(p process.Process) {
-	log.Info("Preview - skipping kill", "pid", p.PID, "name", p.Name)
+	m.logger.Info("Preview - skipping kill", "pid", p.PID, "name", p.Name)
 }
 
 func (m *Monitor) killTreeAndLog(
@@ -218,7 +230,7 @@ func (m *Monitor) killTreeAndLog(
 ) bool {
 	rootKilled, err := m.killTree(ctx, p, descendants)
 	if err != nil {
-		log.Error("Failed to kill process", "pid", p.PID, "name", p.Name, "error", err)
+		m.logger.Error("Failed to kill process", "pid", p.PID, "name", p.Name, "error", err)
 	}
 	return rootKilled
 }
@@ -245,13 +257,16 @@ func (m *Monitor) killTree(
 }
 
 func (m *Monitor) notifyKilled(p process.Process) {
-	if m.notify != nil {
-		m.notify(p.Name, p.PID)
+	if m.notify == nil {
+		return
+	}
+	if err := m.notify(p.Name, p.PID); err != nil {
+		m.logger.Warn("Notification failed", "pid", p.PID, "name", p.Name, "error", err)
 	}
 }
 
 func (m *Monitor) logKill(p process.Process, duration time.Duration) {
-	log.Warn("Killing process",
+	m.logger.Warn("Killing process",
 		"pid", p.PID,
 		"name", p.Name,
 		"reason", m.killReason(p),

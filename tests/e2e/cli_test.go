@@ -118,6 +118,31 @@ func TestVersionUsesReleaseMetadata(t *testing.T) {
 	}
 }
 
+func TestGlobalColorOptionsPreserveVersionOutput(t *testing.T) {
+	cases := [][]string{
+		{"--color=always", "version"},
+		{"version", "--color", "never"},
+	}
+	for _, args := range cases {
+		assertCommandOutput(t, args, "pk "+e2eVersion+"\n")
+	}
+}
+
+func TestInvalidGlobalColorModeFails(t *testing.T) {
+	result := runCLI(t, "--color=sometimes", "version")
+
+	assertExitCode(t, result, 1)
+	assertContains(t, result.stderr, "invalid color mode")
+}
+
+func TestForcedColorStylesHumanErrors(t *testing.T) {
+	result := runCLI(t, "install", "--color=always")
+
+	assertExitCode(t, result, 1)
+	assertContains(t, result.stderr, "\x1b[31mERR\x1b[0m")
+	assertContains(t, result.stderr, "install requires --apply")
+}
+
 func TestCommandHelpRoutes(t *testing.T) {
 	cases := []struct {
 		args     []string
@@ -125,7 +150,13 @@ func TestCommandHelpRoutes(t *testing.T) {
 	}{
 		{args: []string{"scan", "--help"}, expected: "Usage: pk scan"},
 		{args: []string{"help", "cleanup"}, expected: "Usage: pk cleanup"},
+		{args: []string{"cleanup", "--apply", "--help"}, expected: "Usage: pk cleanup"},
+		{
+			args:     []string{"cleanup", "--apply", "--color=never", "--help"},
+			expected: "Usage: pk cleanup",
+		},
 		{args: []string{"monitor", "-h"}, expected: "Usage: pk monitor"},
+		{args: []string{"monitor", "--apply", "--help"}, expected: "Usage: pk monitor"},
 		{args: []string{"skills", "install", "--help"}, expected: "pk skills install"},
 	}
 	for _, current := range cases {

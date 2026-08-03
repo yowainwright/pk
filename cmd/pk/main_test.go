@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"syscall"
@@ -27,6 +29,36 @@ func TestRunPrintsVersion(t *testing.T) {
 	}
 	if out.String() != "pk dev\n" {
 		t.Fatalf("unexpected version output %q", out.String())
+	}
+}
+
+func TestRunAcceptsGlobalColorOptions(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "before command", args: []string{"--color=never", "version"}},
+		{name: "after command", args: []string{"version", "--color", "never"}},
+	}
+	for _, current := range tests {
+		t.Run(current.name, func(t *testing.T) {
+			var out bytes.Buffer
+
+			if err := run(current.args, &out); err != nil {
+				t.Fatalf("run version: %v", err)
+			}
+			if out.String() != "pk dev\n" {
+				t.Fatalf("unexpected version output %q", out.String())
+			}
+		})
+	}
+}
+
+func TestRunRejectsInvalidColorMode(t *testing.T) {
+	err := run([]string{"--color=sometimes", "version"}, &bytes.Buffer{})
+
+	if err == nil {
+		t.Fatal("expected invalid color mode error")
 	}
 }
 
@@ -68,6 +100,19 @@ func TestRunWritesCommandHelp(t *testing.T) {
 	var out bytes.Buffer
 
 	err := run([]string{"cleanup", "--help"}, &out)
+	if err != nil {
+		t.Fatalf("run cleanup help: %v", err)
+	}
+	if !strings.Contains(out.String(), "Usage: pk cleanup") {
+		t.Fatalf("unexpected help output %q", out.String())
+	}
+}
+
+func TestRunWritesCommandHelpAfterOptions(t *testing.T) {
+	commandDeps(t)
+	var out bytes.Buffer
+
+	err := run([]string{"cleanup", "--apply", "--help"}, &out)
 	if err != nil {
 		t.Fatalf("run cleanup help: %v", err)
 	}
@@ -120,6 +165,49 @@ func TestRunScanReturnsScannerError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected scan error")
 	}
+}
+
+func TestApplicationCancellationStopsScan(t *testing.T) {
+	deps := commandDeps(t)
+	deps.scanner.requireCanceled = true
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out bytes.Buffer
+
+	app, args, err := newApplication(ctx, []string{"scan"}, strings.NewReader(""), &out, io.Discard)
+	if err != nil {
+		t.Fatalf("new application: %v", err)
+	}
+	err = app.run(args)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled scan, got %v", err)
+	}
+}
+
+func TestApplicationCancellationStopsInstall(t *testing.T) {
+	deps := commandDeps(t)
+	deps.background.installStarted = make(chan struct{})
+	deps.background.waitForCancellation = true
+	ctx, cancel := context.WithCancel(context.Background())
+	app, args := testApplication(t, ctx, "install", "--apply")
+	finished := make(chan error, 1)
+	go func() { finished <- app.run(args) }()
+	assertCanceled(t, deps.background.installStarted)
+	cancel()
+	if err := waitForCommand(t, finished); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled install, got %v", err)
+	}
+}
+
+func testApplication(t *testing.T, ctx context.Context, args ...string) (application, []string) {
+	t.Helper()
+	app, commandArgs, err := newApplication(
+		ctx, args, strings.NewReader(""), io.Discard, io.Discard,
+	)
+	if err != nil {
+		t.Fatalf("new application: %v", err)
+	}
+	return app, commandArgs
 }
 
 func TestRunScanReturnsParseError(t *testing.T) {
@@ -470,10 +558,10 @@ func TestRunInstallReturnsManagerErrors(t *testing.T) {
 	deps.backgroundErr = errors.New("manager failed")
 	var out bytes.Buffer
 
-	err := run([]string{"install"}, &out)
+	err := run([]string{"install", "--apply"}, &out)
 
-	if err == nil {
-		t.Fatal("expected manager error")
+	if !errors.Is(err, deps.backgroundErr) {
+		t.Fatalf("expected manager error, got %v", err)
 	}
 }
 
@@ -519,7 +607,7 @@ func TestRunMonitorApplyUsesActiveMode(t *testing.T) {
 func TestNewMonitorReturnsMonitor(t *testing.T) {
 	commandDeps(t)
 
-	monitor := newMonitor(&config.Config{}, monitorOptions{})
+	monitor := newMonitor(&config.Config{}, monitorOptions{}, nil)
 
 	if monitor == nil {
 		t.Fatal("expected monitor")
@@ -529,7 +617,9 @@ func TestNewMonitorReturnsMonitor(t *testing.T) {
 func TestNotifyKilledSendsNotification(t *testing.T) {
 	deps := commandDeps(t)
 
-	notifyKilled("node", 42)
+	if err := notifyKilled("node", 42); err != nil {
+		t.Fatalf("notify killed: %v", err)
+	}
 
 	if deps.notificationTitle != "pk" {
 		t.Fatalf("expected notification title, got %q", deps.notificationTitle)
@@ -539,13 +629,16 @@ func TestNotifyKilledSendsNotification(t *testing.T) {
 	}
 }
 
-func TestNotifyKilledIgnoresNotificationErrors(t *testing.T) {
+func TestNotifyKilledReturnsNotificationErrors(t *testing.T) {
 	commandDeps(t)
+	expected := errors.New("notification failed")
 	sendNotification = func(title string, message string) error {
-		return errors.New("notification failed")
+		return expected
 	}
 
-	notifyKilled("node", 42)
+	if err := notifyKilled("node", 42); !errors.Is(err, expected) {
+		t.Fatalf("expected notification error, got %v", err)
+	}
 }
 
 func TestExitOnErrorIgnoresExpectedErrors(t *testing.T) {
@@ -570,21 +663,38 @@ func TestExitOnErrorExitsForUnexpectedErrors(t *testing.T) {
 	}
 }
 
-func TestHandleSignalsCancelsOnSignal(t *testing.T) {
-	oldNotifySignal := notifySignal
-	defer func() {
-		notifySignal = oldNotifySignal
-	}()
-	var sigCh chan<- os.Signal
-	notifySignal = func(c chan<- os.Signal, signals ...os.Signal) {
-		sigCh = c
-	}
+func TestHandleSignalsCancelsAndRestoresDefaults(t *testing.T) {
+	saved := saveCommandDeps()
+	t.Cleanup(saved.restore)
+	harness := newSignalHarness()
+	harness.install()
 	canceled := make(chan struct{})
-
-	handleSignals(func() { close(canceled) })
-	sigCh <- syscall.SIGTERM
-
+	restore := handleSignals(func() { close(canceled) })
+	t.Cleanup(restore)
+	harness.signalChannel <- syscall.SIGTERM
 	assertCanceled(t, canceled)
+	assertCanceled(t, harness.stopped)
+	if len(harness.reset) != 2 {
+		t.Fatalf("expected restored signals, got %#v", harness.reset)
+	}
+}
+
+type signalHarness struct {
+	signalChannel chan<- os.Signal
+	stopped       chan struct{}
+	reset         []os.Signal
+}
+
+func newSignalHarness() *signalHarness {
+	return &signalHarness{stopped: make(chan struct{})}
+}
+
+func (h *signalHarness) install() {
+	notifySignal = func(channel chan<- os.Signal, signals ...os.Signal) {
+		h.signalChannel = channel
+	}
+	stopSignal = func(chan<- os.Signal) { close(h.stopped) }
+	resetSignals = func(signals ...os.Signal) { h.reset = signals }
 }
 
 func TestRunRejectsImplicitMonitorFlags(t *testing.T) {
@@ -640,13 +750,17 @@ func TestIsVersionCommand(t *testing.T) {
 }
 
 type fakeScanner struct {
-	reports []scan.Report
-	err     error
-	called  bool
+	reports         []scan.Report
+	err             error
+	called          bool
+	requireCanceled bool
 }
 
 func (s *fakeScanner) Scan(ctx context.Context) ([]scan.Report, error) {
 	s.called = true
+	if s.requireCanceled {
+		return nil, ctx.Err()
+	}
 	return s.reports, s.err
 }
 
@@ -710,23 +824,32 @@ func (r *fakeRunner) Run(ctx context.Context) error {
 }
 
 type fakeBackgroundManager struct {
-	installed   bool
-	uninstalled bool
-	status      string
-	err         error
+	installed           bool
+	uninstalled         bool
+	status              string
+	err                 error
+	installStarted      chan struct{}
+	waitForCancellation bool
 }
 
-func (m *fakeBackgroundManager) Install() error {
+func (m *fakeBackgroundManager) Install(ctx context.Context) error {
 	m.installed = true
+	if m.installStarted != nil {
+		close(m.installStarted)
+	}
+	if m.waitForCancellation {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	return m.err
 }
 
-func (m *fakeBackgroundManager) Uninstall() error {
+func (m *fakeBackgroundManager) Uninstall(context.Context) error {
 	m.uninstalled = true
 	return m.err
 }
 
-func (m *fakeBackgroundManager) Status() (string, error) {
+func (m *fakeBackgroundManager) Status(context.Context) (string, error) {
 	return m.status, m.err
 }
 
@@ -789,7 +912,11 @@ func installCommandDeps(t *testing.T, deps *commandTestDeps) {
 	}
 	newProcessKiller = func() killer.Killer { return deps.killer }
 	newDockerClient = func() docker.Client { return deps.docker }
-	newMonitorRunner = func(cfg *config.Config, options monitorOptions) monitorRunner {
+	newMonitorRunner = func(
+		cfg *config.Config,
+		options monitorOptions,
+		logger *slog.Logger,
+	) monitorRunner {
 		deps.cfg = cfg
 		deps.monitorOptions = options
 		return deps.runner
@@ -808,7 +935,7 @@ func installCommandDeps(t *testing.T, deps *commandTestDeps) {
 		deps.notificationMessage = message
 		return nil
 	}
-	handleShutdownSignal = func(cancel context.CancelFunc) {}
+	handleShutdownSignal = func(cancel context.CancelFunc) func() { return func() {} }
 }
 
 type savedCommandDeps struct {
@@ -817,13 +944,15 @@ type savedCommandDeps struct {
 	newAudit         func() (auditStore, error)
 	newKiller        func() killer.Killer
 	newDocker        func() docker.Client
-	newRunner        func(*config.Config, monitorOptions) monitorRunner
+	newRunner        func(*config.Config, monitorOptions, *slog.Logger) monitorRunner
 	newBackground    func() (backgroundManager, error)
 	installSkill     func(string) (string, error)
 	defaultSkillRoot func() (string, error)
 	send             func(string, string) error
-	handleSignalFunc func(context.CancelFunc)
+	handleSignalFunc func(context.CancelFunc) func()
 	notifySignalFunc func(chan<- os.Signal, ...os.Signal)
+	stopSignalFunc   func(chan<- os.Signal)
+	resetSignalsFunc func(...os.Signal)
 	exitFunc         func(int)
 }
 
@@ -841,6 +970,8 @@ func saveCommandDeps() savedCommandDeps {
 		send:             sendNotification,
 		handleSignalFunc: handleShutdownSignal,
 		notifySignalFunc: notifySignal,
+		stopSignalFunc:   stopSignal,
+		resetSignalsFunc: resetSignals,
 		exitFunc:         exitProcess,
 	}
 }
@@ -858,6 +989,8 @@ func (d savedCommandDeps) restore() {
 	sendNotification = d.send
 	handleShutdownSignal = d.handleSignalFunc
 	notifySignal = d.notifySignalFunc
+	stopSignal = d.stopSignalFunc
+	resetSignals = d.resetSignalsFunc
 	exitProcess = d.exitFunc
 }
 
@@ -904,5 +1037,16 @@ func assertCanceled(t *testing.T, canceled <-chan struct{}) {
 	case <-canceled:
 	case <-time.After(time.Second):
 		t.Fatal("expected cancellation")
+	}
+}
+
+func waitForCommand(t *testing.T, finished <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-finished:
+		return err
+	case <-time.After(time.Second):
+		t.Fatal("expected command to finish")
+		return nil
 	}
 }
