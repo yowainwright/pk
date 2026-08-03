@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.0](https://github.com/yowainwright/pk/compare/v1.0.0...v1.1.0) (2026-08-03)
+
+
+### Features
+
+* add dependency-free CLI experience layer ([ed60614](https://github.com/yowainwright/pk/commit/ed60614f5d9a87a0dedd0a0f9621e807de5dc385))
+
+
+### Bug Fixes
+
+* harden CLI experience lifecycle ([d554d72](https://github.com/yowainwright/pk/commit/d554d726cb766eb5ba9c19f78ac8d87fc03e82a1))
+* recover canceled service operations ([d1f9cc2](https://github.com/yowainwright/pk/commit/d1f9cc2ed51b0e52bcaf2651a54b0927a8614712))
+
 ## 1.0.0 (2026-07-06)
 
 
