@@ -108,11 +108,20 @@ func resolveStatus(output []byte, err error) (string, error) {
 }
 
 func (r commandRunner) Run(ctx context.Context, name string, args ...string) error {
-	return exec.CommandContext(ctx, name, args...).Run()
+	err := exec.CommandContext(ctx, name, args...).Run()
+	return commandContextError(ctx, err)
 }
 
 func (r commandRunner) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	output, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	return output, commandContextError(ctx, err)
+}
+
+func commandContextError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return errors.Join(ctxErr, err)
+	}
+	return err
 }
 
 func currentUID() string {

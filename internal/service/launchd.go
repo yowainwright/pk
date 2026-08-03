@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"path/filepath"
 )
@@ -12,28 +13,68 @@ func (m *Manager) installLaunchd(ctx context.Context) error {
 	if err := m.writeLaunchdPlist(); err != nil {
 		return err
 	}
-	_ = m.runner.Run(ctx, "launchctl", "bootout", m.launchdDomain(), m.servicePath())
-	if err := ctx.Err(); err != nil {
-		return err
+	if err := m.stopLaunchd(ctx); err != nil {
+		return m.rollbackLaunchdInstall(err)
 	}
-	if err := m.runner.Run(
-		ctx,
-		"launchctl",
-		"bootstrap",
-		m.launchdDomain(),
-		m.servicePath(),
-	); err != nil {
-		return fmt.Errorf("starting launchd service: %w", err)
+	if err := m.bootstrapLaunchd(ctx); err != nil {
+		cause := fmt.Errorf("starting launchd service: %w", err)
+		return m.rollbackLaunchdInstall(cause)
 	}
-	return m.runner.Run(ctx, "launchctl", "kickstart", "-k", m.launchdService())
+	if err := m.kickstartLaunchd(ctx); err != nil {
+		cause := fmt.Errorf("restarting launchd service: %w", err)
+		return m.rollbackLaunchdInstall(cause)
+	}
+	return nil
 }
 
 func (m *Manager) uninstallLaunchd(ctx context.Context) error {
-	_ = m.runner.Run(ctx, "launchctl", "bootout", m.launchdDomain(), m.servicePath())
-	if err := ctx.Err(); err != nil {
+	if err := m.stopLaunchd(ctx); err != nil {
+		return m.restoreLaunchd(err)
+	}
+	if err := removeFile(m.servicePath()); err != nil {
+		return m.restoreLaunchd(err)
+	}
+	return nil
+}
+
+func (m *Manager) rollbackLaunchdInstall(cause error) error {
+	ctx, cancel := recoveryContext()
+	defer cancel()
+	if err := m.stopLaunchd(ctx); err != nil {
+		return lifecycleError(cause, "rolling back launchd install", err)
+	}
+	recovery := removeFile(m.servicePath())
+	return lifecycleError(cause, "rolling back launchd install", recovery)
+}
+
+func (m *Manager) restoreLaunchd(cause error) error {
+	ctx, cancel := recoveryContext()
+	defer cancel()
+	recovery := errors.Join(m.bootstrapLaunchd(ctx), m.kickstartLaunchd(ctx))
+	return lifecycleError(cause, "restoring launchd service", recovery)
+}
+
+func (m *Manager) stopLaunchd(ctx context.Context) error {
+	err := m.runner.Run(ctx, "launchctl", "bootout", m.launchdDomain(), m.servicePath())
+	commandStopped := err == nil
+	contextCanceled := ctx.Err() != nil
+	operationFinished := commandStopped || contextCanceled
+	if operationFinished {
 		return err
 	}
-	return removeFile(m.servicePath())
+	_, statusErr := m.runner.Output(ctx, "launchctl", "print", m.launchdService())
+	if statusErr != nil {
+		return nil
+	}
+	return fmt.Errorf("stopping launchd service: %w", err)
+}
+
+func (m *Manager) bootstrapLaunchd(ctx context.Context) error {
+	return m.runner.Run(ctx, "launchctl", "bootstrap", m.launchdDomain(), m.servicePath())
+}
+
+func (m *Manager) kickstartLaunchd(ctx context.Context) error {
+	return m.runner.Run(ctx, "launchctl", "kickstart", "-k", m.launchdService())
 }
 
 func (m *Manager) writeLaunchdPlist() error {
