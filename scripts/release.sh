@@ -244,8 +244,13 @@ release_verify() {
 release_execute() {
   local initial_run="$1"
   release_dispatch_pr "$initial_run"
-  local pr_number pr_url head_ref
-  IFS=$'\t' read -r pr_number pr_url head_ref <<< "$(release_require_pr)"
+  local pr_line pr_number pr_url head_ref
+  pr_line="$(release_require_pr)" || return
+  IFS=$'\t' read -r pr_number pr_url head_ref <<< "$pr_line"
+  [[ -n "$pr_number" && -n "$head_ref" ]] || {
+    release_fail "Release pull request lookup returned no result"
+    return
+  }
   release_info "Release pull request: $pr_url"
   release_check_pr "$pr_number" "$head_ref"
   local release_please_before publish_before
