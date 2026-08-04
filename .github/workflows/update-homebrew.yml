@@ -96,9 +96,18 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE: "1"
           TAG_NAME: ${{ inputs.tag_name }}
         run: |
-          brew install --cask "$PWD/generated/pk.rb"
+          tap_repo="$RUNNER_TEMP/pk-release-tap"
+          mkdir -p "$tap_repo/Casks"
+          cp generated/pk.rb "$tap_repo/Casks/pk.rb"
+          git -C "$tap_repo" init --quiet
+          git -C "$tap_repo" add Casks/pk.rb
+          git -C "$tap_repo" -c user.name=Homebrew -c user.email=brew@localhost \
+            commit --quiet -m "test: verify released cask"
+          brew tap pk-release/verify "file://$tap_repo"
+          brew install --cask pk-release/verify/pk
           test "$(pk --version)" = "pk $TAG_NAME"
           brew uninstall --cask pk
+          brew untap pk-release/verify
 
       - name: Checkout Homebrew tap
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
