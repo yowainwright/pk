@@ -6,6 +6,7 @@ readonly PK_PUBLISH_WORKFLOW="release.yml"
 readonly PK_CI_WORKFLOW="ci.yml"
 readonly PK_GITHUB_REPOSITORY="yowainwright/pk"
 readonly PK_RELEASE_POLL_LIMIT=120
+readonly PK_RELEASE_PR_POLL_LIMIT=12
 
 release_info() {
   if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
@@ -184,13 +185,14 @@ release_find_pr() {
 release_require_pr() {
   local attempt=0
   local result
-  while (( attempt < PK_RELEASE_POLL_LIMIT )); do
+  while (( attempt < PK_RELEASE_PR_POLL_LIMIT )); do
     result="$(release_find_pr)"
     [[ -n "$result" ]] && printf '%s' "$result" && return 0
     sleep 5
     ((attempt += 1))
   done
-  release_fail "Timed out waiting for the release pull request"
+  release_error "No release pull request for $PK_RELEASE_VERSION"
+  release_fail "release-please skips releases without feat: or fix: commits since the last tag"
 }
 
 release_dispatch_pr() {
