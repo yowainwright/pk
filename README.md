@@ -169,6 +169,7 @@ GoReleaser builds four binaries, generates checksums and a Homebrew cask, and
 signs the checksum with keyless cosign. The non-canceling publisher verifies
 the draft, assets, signature, and generated cask before publication. Stable
 releases update `yowainwright/homebrew-tap`; prereleases do not.
+Maintenance commits use `chore:` and remain eligible for patch releases.
 
 ## Contributing and Support
 

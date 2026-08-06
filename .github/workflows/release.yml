@@ -239,3 +239,24 @@ jobs:
       artifact_name: homebrew-pk-${{ inputs.tag_name }}
     secrets:
       HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+  restore-draft:
+    name: Restore Draft After Homebrew Failure
+    if: >-
+      ${{
+        always() &&
+        needs.publish.result == 'success' &&
+        needs.update-homebrew.result == 'failure'
+      }}
+    needs: [publish, update-homebrew]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Restore draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: gh release edit "$TAG_NAME" --draft=true --latest=false

@@ -192,7 +192,7 @@ release_require_pr() {
     ((attempt += 1))
   done
   release_error "No release pull request for $PK_RELEASE_VERSION"
-  release_fail "release-please skips releases without feat: or fix: commits since the last tag"
+  release_fail "release-please found no changelog entries since the last tag"
 }
 
 release_dispatch_pr() {
