@@ -13,8 +13,14 @@ type releaseConfig struct {
 }
 
 type packageConfig struct {
-	Draft            bool `json:"draft"`
-	ForceTagCreation bool `json:"force-tag-creation"`
+	ChangelogSections []changelogSection `json:"changelog-sections"`
+	Draft             bool               `json:"draft"`
+	ForceTagCreation  bool               `json:"force-tag-creation"`
+}
+
+type changelogSection struct {
+	Type   string `json:"type"`
+	Hidden bool   `json:"hidden"`
 }
 
 func TestReleasePleaseCreatesTaggedDrafts(t *testing.T) {
@@ -30,6 +36,21 @@ func TestReleasePleaseCreatesTaggedDrafts(t *testing.T) {
 	if !root.ForceTagCreation {
 		t.Fatalf("expected tagged draft configuration, got %#v", root)
 	}
+}
+
+func TestReleasePleaseIncludesMaintenanceCommits(t *testing.T) {
+	var config releaseConfig
+	data := readRepoFile(t, "release-please-config.json")
+	if err := json.Unmarshal([]byte(data), &config); err != nil {
+		t.Fatalf("parse release config: %v", err)
+	}
+	for _, section := range config.Packages["."].ChangelogSections {
+		isVisibleChore := section.Type == "chore" && !section.Hidden
+		if isVisibleChore {
+			return
+		}
+	}
+	t.Fatal("expected visible chore changelog section")
 }
 
 func TestReleasePleaseDispatchesPublisher(t *testing.T) {
@@ -59,6 +80,9 @@ func TestPublisherValidatesBeforePublication(t *testing.T) {
 	assertContains(t, workflow, "needs: build")
 	assertContains(t, workflow, "gh release edit \"$TAG_NAME\" --draft=false")
 	assertContains(t, workflow, "needs: publish")
+	assertContains(t, workflow, "needs: [publish, update-homebrew]")
+	assertContains(t, workflow, "needs.update-homebrew.result == 'failure'")
+	assertContains(t, workflow, "gh release edit \"$TAG_NAME\" --draft=true")
 }
 
 func TestStableReleaseUpdatesGeneratedCask(t *testing.T) {
@@ -68,7 +92,10 @@ func TestStableReleaseUpdatesGeneratedCask(t *testing.T) {
 	assertContains(t, homebrew, "actions/download-artifact@")
 	assertContains(t, homebrew, "cp generated/pk.rb tap/Casks/pk.rb")
 	assertContains(t, homebrew, "git -C tap rm --ignore-unmatch Formula/pk.rb")
+	assertContains(t, homebrew, "brew tap pk-release/verify")
+	assertContains(t, homebrew, "brew install --cask pk-release/verify/pk")
 	assertMissing(t, homebrew, "cat > Formula/pk.rb")
+	assertMissing(t, homebrew, `brew install --cask "$PWD/generated/pk.rb"`)
 }
 
 func TestCIExercisesReleaseAndSecurityPaths(t *testing.T) {

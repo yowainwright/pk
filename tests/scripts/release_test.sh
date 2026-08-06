@@ -115,6 +115,17 @@ test_execute_aborts_without_release_pr() (
   fi
 )
 
+test_missing_release_pr_uses_config_neutral_error() (
+  PK_RELEASE_VERSION="v1.2.4"
+  release_find_pr() { :; }
+  sleep() { :; }
+  output="$(release_require_pr 2>&1 || true)"
+  grep -Fq 'release-please found no changelog entries since the last tag' <<< "$output"
+  if grep -Eq 'feat:|fix:|chore:' <<< "$output"; then
+    return 1
+  fi
+)
+
 run_test() {
   local name="$1"
   if "$name"; then
@@ -133,7 +144,8 @@ for test_name in \
   test_unknown_option_fails \
   test_checksum_signature_policy \
   test_release_pr_dispatches_ci \
-  test_execute_aborts_without_release_pr; do
+  test_execute_aborts_without_release_pr \
+  test_missing_release_pr_uses_config_neutral_error; do
   run_test "$test_name" || ((failures += 1))
 done
 

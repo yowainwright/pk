@@ -2,6 +2,32 @@
   "include-component-in-tag": false,
   "packages": {
     ".": {
+      "changelog-sections": [
+        {
+          "type": "feat",
+          "section": "Features"
+        },
+        {
+          "type": "fix",
+          "section": "Bug Fixes"
+        },
+        {
+          "type": "perf",
+          "section": "Performance Improvements"
+        },
+        {
+          "type": "deps",
+          "section": "Dependencies"
+        },
+        {
+          "type": "revert",
+          "section": "Reverts"
+        },
+        {
+          "type": "chore",
+          "section": "Maintenance"
+        }
+      ],
       "draft": true,
       "force-tag-creation": true,
       "release-type": "go",
