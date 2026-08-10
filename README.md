@@ -129,10 +129,19 @@ layer is implemented with the Go standard library and adds no dependencies.
 
 ## Development
 
-<!-- local Go and legibility lint commands derived from go.mod, .mise.toml, .custom-gcl.yml, .golangci.yml, and .github/workflows/ci.yml -->
+<!-- local setup, Go, and legibility commands derived from scripts/setup.sh, go.mod, .mise.toml, .custom-gcl.yml, .golangci.yml, and .github/workflows/ci.yml -->
 
 This repository pins Go, GoReleaser, and `svu` in `.mise.toml` and the custom
-linter in `.custom-gcl.yml`. Install the mise-managed tools with `mise install`.
+linter in `.custom-gcl.yml`. Install the tools and repository Git hooks:
+
+```sh
+mise install
+mise run setup
+```
+
+Setup writes managed hooks directly to `.git/hooks` and preserves existing
+unmanaged hooks. The pre-commit hook checks formatting and runs the Go tests;
+the pre-push hook runs the complete local check suite.
 
 Build and test:
 

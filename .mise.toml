@@ -24,6 +24,17 @@ test -z "$files" || {
 }
 '''
 
+[tasks.setup]
+description = "Install repository Git hooks"
+run = "sh scripts/setup.sh"
+
+[tasks.hook-pre-commit]
+description = "Run fast commit checks"
+run = '''
+mise run fmt-check
+go test ./...
+'''
+
 [tasks.lint]
 description = "Run Go vet and the custom linter"
 run = "sh scripts/lint.sh"
@@ -41,8 +52,11 @@ description = "Run isolated process cleanup tests"
 run = "./tests/e2e/test-process-cleanup.sh"
 
 [tasks.test-scripts]
-description = "Run release script tests"
-run = "bash tests/scripts/release_test.sh"
+description = "Run shell script tests"
+run = '''
+bash tests/scripts/release_test.sh
+bash tests/scripts/setup_test.sh
+'''
 
 [tasks.security]
 description = "Run vulnerability and source security scans"
