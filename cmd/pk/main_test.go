@@ -829,9 +829,9 @@ type fakeCommandKiller struct {
 	pid    int32
 }
 
-func (k *fakeCommandKiller) Kill(ctx context.Context, pid int32) error {
+func (k *fakeCommandKiller) Kill(ctx context.Context, target process.Process) error {
 	k.called = true
-	k.pid = pid
+	k.pid = target.PID
 	return nil
 }
 

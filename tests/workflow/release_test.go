@@ -102,14 +102,23 @@ func TestCIExercisesReleaseAndSecurityPaths(t *testing.T) {
 	workflow := readRepoFile(t, ".github/workflows/ci.yml")
 	script := readRepoFile(t, "scripts/release.sh")
 	security := readRepoFile(t, "scripts/security.sh")
+	assertCIWorkflowPaths(t, workflow)
+	assertReleaseScriptPaths(t, script)
+	assertSecurityToolVersions(t, security)
+}
+
+func assertCIWorkflowPaths(t *testing.T, workflow string) {
+	t.Helper()
 	assertContains(t, workflow, "workflow_dispatch:")
 	assertContains(t, workflow, "go test -tags=e2e")
 	assertContains(t, workflow, "sh scripts/lint.sh")
 	assertContains(t, workflow, "sh scripts/security.sh")
-	assertContains(t, security, "v1.2.0")
-	assertContains(t, security, "v2.25.0")
 	assertContains(t, workflow, "release --snapshot --clean --skip=sign")
 	assertContains(t, workflow, "codecov/codecov-action@")
+}
+
+func assertReleaseScriptPaths(t *testing.T, script string) {
+	t.Helper()
 	assertContains(t, script, `gh workflow run "$PK_CI_WORKFLOW" --ref "$head_ref"`)
 	assertContains(t, script, `--match-head-commit "$PK_RELEASE_VALIDATED_HEAD"`)
 	assertContains(t, script, `PK_RELEASE_VALIDATED_BASE="$pr_base"`)
@@ -119,6 +128,12 @@ func TestCIExercisesReleaseAndSecurityPaths(t *testing.T) {
 	assertContains(t, script, "reviewThreads(first:100)")
 	assertContains(t, script, `PK_CI_REQUIRED_CHECK="Build, Lint, and Test"`)
 	assertContains(t, script, `arguments+=(--admin)`)
+}
+
+func assertSecurityToolVersions(t *testing.T, security string) {
+	t.Helper()
+	assertContains(t, security, "v1.2.0")
+	assertContains(t, security, "v2.25.0")
 }
 
 func TestBugReportSupportsPreDoctorReleases(t *testing.T) {

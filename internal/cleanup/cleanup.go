@@ -13,7 +13,7 @@ import (
 )
 
 type Killer interface {
-	Kill(ctx context.Context, pid int32) error
+	Kill(ctx context.Context, target process.Process) error
 }
 
 type Recorder interface {
@@ -104,7 +104,7 @@ func runProcess(
 	if !apply {
 		return result
 	}
-	if err := killer.Kill(ctx, proc.PID); err != nil {
+	if err := killer.Kill(ctx, proc); err != nil {
 		result.Error = err.Error()
 	}
 	return result

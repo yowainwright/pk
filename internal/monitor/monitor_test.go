@@ -303,12 +303,12 @@ type fakeKiller struct {
 	errors map[int32]error
 }
 
-func (k *fakeKiller) Kill(ctx context.Context, pid int32) error {
+func (k *fakeKiller) Kill(ctx context.Context, target process.Process) error {
 	k.called = true
-	k.pid = pid
-	k.pids = append(k.pids, pid)
+	k.pid = target.PID
+	k.pids = append(k.pids, target.PID)
 	if k.errors != nil {
-		if err := k.errors[pid]; err != nil {
+		if err := k.errors[target.PID]; err != nil {
 			return err
 		}
 	}
@@ -353,6 +353,7 @@ func overMemoryProcess() process.Process {
 func normalProcess() process.Process {
 	var proc process.Process
 	proc.PID = 42
+	proc.CreateTime = 123
 	proc.Name = "node"
 	proc.CPUPercent = 1
 	return proc
