@@ -111,6 +111,23 @@ func TestCIExercisesReleaseAndSecurityPaths(t *testing.T) {
 	assertContains(t, workflow, "release --snapshot --clean --skip=sign")
 	assertContains(t, workflow, "codecov/codecov-action@")
 	assertContains(t, script, `gh workflow run "$PK_CI_WORKFLOW" --ref "$head_ref"`)
+	assertContains(t, script, `--match-head-commit "$PK_RELEASE_VALIDATED_HEAD"`)
+	assertContains(t, script, `PK_RELEASE_VALIDATED_BASE="$pr_base"`)
+	assertContains(t, script, `compare/$base...$head`)
+	assertContains(t, script, `release_require_admin_merge "$pr_number"`)
+	assertContains(t, script, `.restrictions != null`)
+	assertContains(t, script, "reviewThreads(first:100)")
+	assertContains(t, script, `PK_CI_REQUIRED_CHECK="Build, Lint, and Test"`)
+	assertContains(t, script, `arguments+=(--admin)`)
+}
+
+func TestBugReportSupportsPreDoctorReleases(t *testing.T) {
+	template := readRepoFile(t, ".github/ISSUE_TEMPLATE/bug_report.yml")
+	assertContains(t, template, "id: version")
+	assertContains(t, template, "Run `pk --version`.")
+	assertContains(t, template, "Diagnostics (if available)")
+	assertContains(t, template, "id: environment")
+	assertContains(t, template, "Architecture: arm64 or amd64")
 }
 
 func TestCaskVerificationIsShared(t *testing.T) {

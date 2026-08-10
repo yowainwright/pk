@@ -118,6 +118,17 @@ func TestVersionUsesReleaseMetadata(t *testing.T) {
 	}
 }
 
+func TestDoctorWritesShareableDiagnostics(t *testing.T) {
+	result := runCLI(t, "doctor")
+
+	if result.err != nil {
+		t.Fatalf("doctor failed: %v\n%s", result.err, result.stderr)
+	}
+	assertContains(t, result.stdout, "version: "+e2eVersion)
+	assertContains(t, result.stdout, "platform: "+runtime.GOOS+"/"+runtime.GOARCH)
+	assertContains(t, result.stdout, "privacy: excludes paths")
+}
+
 func TestGlobalColorOptionsPreserveVersionOutput(t *testing.T) {
 	cases := [][]string{
 		{"--color=always", "version"},
@@ -158,6 +169,7 @@ func TestCommandHelpRoutes(t *testing.T) {
 		{args: []string{"monitor", "-h"}, expected: "Usage: pk monitor"},
 		{args: []string{"monitor", "--apply", "--help"}, expected: "Usage: pk monitor"},
 		{args: []string{"skills", "install", "--help"}, expected: "pk skills install"},
+		{args: []string{"doctor", "--help"}, expected: "Usage: pk doctor"},
 	}
 	for _, current := range cases {
 		assertHelpRoute(t, current.args, current.expected)

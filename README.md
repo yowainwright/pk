@@ -57,6 +57,15 @@ Show cleanup audit events:
 pk history
 ```
 
+Print a privacy-safe diagnostic report to paste into a bug report:
+
+```sh
+pk doctor
+```
+
+The report includes versions and component availability, but excludes paths,
+commands, process details, and audit contents.
+
 Install the bundled agent skill:
 
 ```sh
@@ -160,7 +169,10 @@ mise run release
 `svu` derives the recommended version from conventional commits and supplies
 patch, minor, major, release-candidate, and custom choices. The command runs the
 complete release preview, opens the exact Release Please PR, dispatches and
-waits for its CI, asks before merging, and follows publication to completion.
+waits for its CI, verifies the tested commit, asks before merging, and follows
+publication to completion. Bot-created PRs whose required check event is
+suppressed by GitHub are merged with a commit-pinned admin override only after
+that exact commit passes CI.
 Preview without changing GitHub state with
 `bash scripts/release.sh --dry-run`.
 

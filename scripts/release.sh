@@ -4,6 +4,7 @@ set -euo pipefail
 readonly PK_RELEASE_WORKFLOW="release-please.yml"
 readonly PK_PUBLISH_WORKFLOW="release.yml"
 readonly PK_CI_WORKFLOW="ci.yml"
+readonly PK_CI_REQUIRED_CHECK="Build, Lint, and Test"
 readonly PK_GITHUB_REPOSITORY="yowainwright/pk"
 readonly PK_RELEASE_POLL_LIMIT=120
 readonly PK_RELEASE_PR_POLL_LIMIT=12
@@ -211,15 +212,213 @@ release_check_pr() {
   gh workflow run "$PK_CI_WORKFLOW" --ref "$head_ref"
   run_id="$(release_wait_for_run "$PK_CI_WORKFLOW" "$previous" workflow_dispatch "$head_ref")"
   release_watch_run "release pull request checks" "$run_id"
-  local merge_state
-  merge_state="$(gh pr view "$pr_number" --json mergeStateStatus --jq .mergeStateStatus)"
-  [[ "$merge_state" == "CLEAN" ]] || release_fail "Release pull request is $merge_state"
+  release_validate_pr_run "$pr_number" "$run_id"
+}
+
+release_validate_pr_run() {
+  local pr_number="$1"
+  local run_id="$2"
+  local run_head pr_info pr_head pr_base mergeable
+  run_head="$(gh run view "$run_id" --json headSha --jq .headSha)"
+  pr_info="$(gh pr view "$pr_number" --json headRefOid,baseRefOid,mergeable \
+    --jq '[.headRefOid,.baseRefOid,.mergeable] | @tsv')"
+  IFS=$'\t' read -r pr_head pr_base mergeable <<< "$pr_info"
+  release_require_tested_head "$run_head" "$pr_head" || return
+  [[ "$mergeable" == "MERGEABLE" ]] || {
+    release_fail "Release pull request is $mergeable"
+    return
+  }
+  release_require_current_base "$pr_base" "$pr_head" || return
+  PK_RELEASE_VALIDATED_HEAD="$pr_head"
+  PK_RELEASE_VALIDATED_BASE="$pr_base"
+}
+
+release_require_tested_head() {
+  local run_head="$1"
+  local pr_head="$2"
+  [[ -n "$pr_head" && "$run_head" == "$pr_head" ]] || {
+    release_fail "Release pull request changed after validation"
+    return
+  }
+}
+
+release_require_current_base() {
+  local base="$1"
+  local head="$2"
+  local comparison
+  comparison="$(release_compare_revision "$base" "$head")" || return
+  [[ "$comparison" == "ahead" || "$comparison" == "identical" ]] || {
+    release_fail "Release pull request does not contain the current base"
+    return
+  }
+}
+
+release_compare_revision() {
+  local base head endpoint
+  base="$1"
+  head="$2"
+  endpoint="repos/$PK_GITHUB_REPOSITORY/compare/$base...$head"
+  gh api "$endpoint" --jq .status
+}
+
+release_review_threads() {
+  local owner repository query filter pr_number
+  pr_number="$1"
+  owner="${PK_GITHUB_REPOSITORY%%/*}"
+  repository="${PK_GITHUB_REPOSITORY#*/}"
+  query="query(\$owner:String!,\$repository:String!,\$number:Int!){"
+  query+="repository(owner:\$owner,name:\$repository){"
+  query+="pullRequest(number:\$number){reviewThreads(first:100){"
+  query+='nodes{isResolved}pageInfo{hasNextPage}}}}}'
+  filter='[.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage,'
+  filter+='([.data.repository.pullRequest.reviewThreads.nodes[]'
+  filter+=' | select(.isResolved == false)] | length)] | @tsv'
+  gh api graphql -F owner="$owner" -F repository="$repository" \
+    -F number="$pr_number" -f query="$query" --jq "$filter"
+}
+
+release_require_clear_reviews() {
+  local pr_number decision thread_info has_more unresolved
+  pr_number="$1"
+  decision="$(gh pr view "$pr_number" --json reviewDecision --jq '.reviewDecision // ""')" || return
+  [[ -z "$decision" || "$decision" == "APPROVED" ]] || {
+    release_fail "Release pull request requires review approval"
+    return
+  }
+  thread_info="$(release_review_threads "$pr_number")" || return
+  IFS=$'\t' read -r has_more unresolved <<< "$thread_info"
+  [[ "$has_more" == "false" && "$unresolved" == "0" ]] || \
+    release_fail "Release pull request has unresolved or unverified conversations"
+}
+
+release_required_contexts() {
+  local endpoint
+  endpoint="repos/$PK_GITHUB_REPOSITORY/branches/main/protection/required_status_checks"
+  gh api "$endpoint" --jq '.contexts[]'
+}
+
+release_require_no_rulesets() {
+  local endpoint count
+  endpoint="repos/$PK_GITHUB_REPOSITORY/rules/branches/main"
+  count="$(gh api "$endpoint" --jq 'length')" || return
+  [[ "$count" == "0" ]] || release_fail "Release pull request is blocked by a ruleset"
+}
+
+release_require_no_classic_blockers() {
+  local endpoint filter blocked
+  endpoint="repos/$PK_GITHUB_REPOSITORY/branches/main/protection"
+  filter='[.restrictions != null,'
+  filter+='(.required_signatures.enabled // false),'
+  filter+='(.lock_branch.enabled // false)] | any'
+  blocked="$(gh api "$endpoint" --jq "$filter")" || return
+  [[ "$blocked" == "false" ]] || \
+    release_fail "Release pull request has unrelated branch protections"
+}
+
+release_required_check_rows() {
+  local pr_number check_count rows check_status
+  pr_number="$1"
+  check_status=0
+  check_count="$(gh pr view "$pr_number" --json statusCheckRollup \
+    --jq '.statusCheckRollup | length')" || return
+  [[ "$check_count" != "0" ]] || return
+  rows="$(gh pr checks "$pr_number" --required --json name,bucket,event \
+    --jq '.[] | [.name,.bucket,.event] | @tsv')" || check_status=$?
+  if [[ -z "$rows" && "$check_status" != "0" ]]; then
+    release_fail "Could not inspect required checks"
+    return
+  fi
+  printf '%s' "$rows"
+}
+
+release_check_state() {
+  local expected_name expected_event rows name bucket event state
+  expected_name="$1"
+  expected_event="$2"
+  rows="$3"
+  state="missing"
+  while IFS=$'\t' read -r name bucket event; do
+    [[ "$name" == "$expected_name" ]] || continue
+    [[ -z "$expected_event" || "$event" == "$expected_event" ]] || continue
+    [[ "$bucket" != "fail" && "$bucket" != "cancel" ]] || {
+      printf 'fail'
+      return
+    }
+    [[ "$bucket" != "pending" && "$bucket" != "skipping" ]] || state="pending"
+    [[ "$bucket" != "pass" || "$state" != "missing" ]] || state="pass"
+  done <<< "$rows"
+  printf '%s' "$state"
+}
+
+release_require_other_checks() {
+  local contexts rows context state
+  contexts="$1"
+  rows="$2"
+  while IFS= read -r context; do
+    [[ -n "$context" && "$context" != "$PK_CI_REQUIRED_CHECK" ]] || continue
+    state="$(release_check_state "$context" "" "$rows")"
+    [[ "$state" == "pass" ]] || {
+      release_fail "Required check is not passing: $context"
+      return
+    }
+  done <<< "$contexts"
+}
+
+release_require_suppressed_ci() {
+  local pr_number contexts rows ci_state
+  pr_number="$1"
+  contexts="$(release_required_contexts)" || return
+  grep -Fxq "$PK_CI_REQUIRED_CHECK" <<< "$contexts" || {
+    release_fail "Required CI check is not protected"
+    return
+  }
+  rows="$(release_required_check_rows "$pr_number")" || return
+  ci_state="$(release_check_state "$PK_CI_REQUIRED_CHECK" pull_request "$rows")"
+  [[ "$ci_state" == "missing" ]] || {
+    release_fail "Required CI check was not suppressed"
+    return
+  }
+  release_require_other_checks "$contexts" "$rows"
+}
+
+release_require_admin_merge() {
+  release_require_clear_reviews "$1" || return
+  release_require_no_rulesets || return
+  release_require_no_classic_blockers || return
+  release_require_suppressed_ci "$1"
+}
+
+release_require_validated_revision() {
+  local pr_number revision current_head current_base
+  pr_number="$1"
+  revision="$(gh pr view "$pr_number" --json headRefOid,baseRefOid \
+    --jq '[.headRefOid,.baseRefOid] | @tsv')" || return
+  IFS=$'\t' read -r current_head current_base <<< "$revision"
+  [[ "$current_head" == "$PK_RELEASE_VALIDATED_HEAD" && \
+    "$current_base" == "$PK_RELEASE_VALIDATED_BASE" ]] || \
+    release_fail "Release pull request or base changed after validation"
 }
 
 release_merge_pr() {
   local pr_number="$1"
+  local merge_state
+  local arguments=(pr merge "$pr_number" --squash --delete-branch)
+  [[ -n "${PK_RELEASE_VALIDATED_HEAD:-}" && -n "${PK_RELEASE_VALIDATED_BASE:-}" ]] || {
+    release_fail "Release pull request was not validated"
+    return
+  }
+  arguments+=(--match-head-commit "$PK_RELEASE_VALIDATED_HEAD")
   release_confirm "Merge $PK_RELEASE_VERSION and publish it?"
-  gh pr merge "$pr_number" --squash --delete-branch
+  merge_state="$(gh pr view "$pr_number" --json mergeStateStatus --jq .mergeStateStatus)"
+  if [[ "$merge_state" == "BLOCKED" ]]; then
+    release_require_admin_merge "$pr_number" || return
+    arguments+=(--admin)
+  elif [[ "$merge_state" != "CLEAN" ]]; then
+    release_fail "Release pull request is $merge_state"
+    return
+  fi
+  release_require_validated_revision "$pr_number" || return
+  gh "${arguments[@]}"
 }
 
 release_watch_publication() {

@@ -95,7 +95,10 @@ test_release_pr_dispatches_ci() (
   gh() {
     printf '%s\n' "$*" >> "$log_path"
     case "$*" in
-      'pr view '*) printf 'CLEAN\n' ;;
+      'run view 11 '*) printf 'abc123\n' ;;
+      'pr view 42 --json headRefOid,baseRefOid,mergeable '*) \
+        printf 'abc123\tbase123\tMERGEABLE\n' ;;
+      'api repos/'*'/compare/base123...abc123 '*) printf 'ahead\n' ;;
     esac
   }
   release_latest_run() { printf '10'; }
@@ -104,6 +107,211 @@ test_release_pr_dispatches_ci() (
   release_check_pr 42 release-please--branches--main
   expected='workflow run ci.yml --ref release-please--branches--main'
   grep -Fxq "$expected" "$log_path"
+  test_equal "$PK_RELEASE_VALIDATED_HEAD" "abc123"
+  test_equal "$PK_RELEASE_VALIDATED_BASE" "base123"
+)
+
+test_release_pr_rejects_unvalidated_head() (
+  gh() {
+    case "$*" in
+      'workflow run '*) ;;
+      'run view 11 '*) printf 'old-head\n' ;;
+      'pr view 42 --json headRefOid,baseRefOid,mergeable '*) \
+        printf 'new-head\tbase123\tMERGEABLE\n' ;;
+    esac
+  }
+  release_latest_run() { printf '10'; }
+  release_wait_for_run() { printf '11'; }
+  release_watch_run() { :; }
+  if release_check_pr 42 release-please--branches--main >/dev/null 2>&1; then
+    return 1
+  fi
+)
+
+test_release_pr_rejects_stale_base() (
+  gh() {
+    case "$*" in
+      'workflow run '*) ;;
+      'run view 11 '*) printf 'abc123\n' ;;
+      'pr view 42 --json headRefOid,baseRefOid,mergeable '*) \
+        printf 'abc123\tbase123\tMERGEABLE\n' ;;
+      'api repos/'*'/compare/base123...abc123 '*) printf 'diverged\n' ;;
+    esac
+  }
+  release_latest_run() { printf '10'; }
+  release_wait_for_run() { printf '11'; }
+  release_watch_run() { :; }
+  if release_check_pr 42 release-please--branches--main >/dev/null 2>&1; then
+    return 1
+  fi
+)
+
+release_admin_test_gh() {
+  printf '%s\n' "$*" >> "$RELEASE_TEST_LOG"
+  case "$*" in
+    'pr view 42 --json mergeStateStatus '*) printf 'BLOCKED\n' ;;
+    'pr view 42 --json reviewDecision '*) printf '%s\n' "$RELEASE_TEST_REVIEW" ;;
+    'pr view 42 --json headRefOid,baseRefOid '*) \
+      printf '%s\t%s\n' "${RELEASE_TEST_HEAD:-abc123}" "${RELEASE_TEST_BASE:-base123}" ;;
+    'api graphql '*) printf '%s\n' "$RELEASE_TEST_THREADS" ;;
+    'api repos/'*'/rules/branches/main '*) printf '%s\n' "${RELEASE_TEST_RULES:-0}" ;;
+    'api repos/'*'/required_status_checks '*) printf '%s\n' "$RELEASE_TEST_CONTEXTS" ;;
+    'api repos/'*'/branches/main/protection '*) \
+      printf '%s\n' "${RELEASE_TEST_CLASSIC_BLOCKER:-false}" ;;
+    'pr view 42 --json statusCheckRollup '*) printf '1\n' ;;
+    'pr checks 42 --required '*) printf '%s\n' "$RELEASE_TEST_CHECKS" ;;
+  esac
+}
+
+test_blocked_release_pr_uses_validated_admin_merge() (
+  RELEASE_TEST_LOG="$(mktemp)"
+  trap 'rm -f -- "$RELEASE_TEST_LOG"' EXIT
+  PK_RELEASE_VERSION="v1.2.3"
+  PK_RELEASE_VALIDATED_HEAD="abc123"
+  PK_RELEASE_VALIDATED_BASE="base123"
+  RELEASE_TEST_REVIEW="APPROVED"
+  RELEASE_TEST_THREADS=$'false\t0'
+  RELEASE_TEST_CONTEXTS="Build, Lint, and Test"
+  RELEASE_TEST_CHECKS=$'Build, Lint, and Test\tpass\tworkflow_dispatch'
+  release_confirm() { :; }
+  gh() { release_admin_test_gh "$@"; }
+  release_merge_pr 42
+  expected='pr merge 42 --squash --delete-branch --match-head-commit abc123 --admin'
+  grep -Fxq "$expected" "$RELEASE_TEST_LOG"
+)
+
+test_blocked_release_pr_rejects_required_review() (
+  RELEASE_TEST_LOG="$(mktemp)"
+  trap 'rm -f -- "$RELEASE_TEST_LOG"' EXIT
+  PK_RELEASE_VERSION="v1.2.3"
+  PK_RELEASE_VALIDATED_HEAD="abc123"
+  PK_RELEASE_VALIDATED_BASE="base123"
+  RELEASE_TEST_REVIEW="REVIEW_REQUIRED"
+  release_confirm() { :; }
+  gh() { release_admin_test_gh "$@"; }
+  if release_merge_pr 42 >/dev/null 2>&1; then
+    return 1
+  fi
+  ! grep -Fq 'pr merge 42' "$RELEASE_TEST_LOG"
+)
+
+test_blocked_release_pr_rejects_unresolved_conversation() (
+  RELEASE_TEST_LOG="$(mktemp)"
+  trap 'rm -f -- "$RELEASE_TEST_LOG"' EXIT
+  PK_RELEASE_VERSION="v1.2.3"
+  PK_RELEASE_VALIDATED_HEAD="abc123"
+  PK_RELEASE_VALIDATED_BASE="base123"
+  RELEASE_TEST_REVIEW="APPROVED"
+  RELEASE_TEST_THREADS=$'false\t1'
+  release_confirm() { :; }
+  gh() { release_admin_test_gh "$@"; }
+  if release_merge_pr 42 >/dev/null 2>&1; then
+    return 1
+  fi
+  ! grep -Fq 'pr merge 42' "$RELEASE_TEST_LOG"
+)
+
+test_blocked_release_pr_rejects_other_required_check() (
+  RELEASE_TEST_LOG="$(mktemp)"
+  trap 'rm -f -- "$RELEASE_TEST_LOG"' EXIT
+  PK_RELEASE_VERSION="v1.2.3"
+  PK_RELEASE_VALIDATED_HEAD="abc123"
+  PK_RELEASE_VALIDATED_BASE="base123"
+  RELEASE_TEST_REVIEW="APPROVED"
+  RELEASE_TEST_THREADS=$'false\t0'
+  RELEASE_TEST_CONTEXTS=$'Build, Lint, and Test\nSecurity Scans'
+  RELEASE_TEST_CHECKS=$'Build, Lint, and Test\tpass\tworkflow_dispatch\nSecurity Scans\tpending\tpull_request'
+  release_confirm() { :; }
+  gh() { release_admin_test_gh "$@"; }
+  if release_merge_pr 42 >/dev/null 2>&1; then
+    return 1
+  fi
+  ! grep -Fq 'pr merge 42' "$RELEASE_TEST_LOG"
+)
+
+test_blocked_release_pr_rejects_pending_ci_event() (
+  RELEASE_TEST_LOG="$(mktemp)"
+  trap 'rm -f -- "$RELEASE_TEST_LOG"' EXIT
+  PK_RELEASE_VERSION="v1.2.3"
+  PK_RELEASE_VALIDATED_HEAD="abc123"
+  PK_RELEASE_VALIDATED_BASE="base123"
+  RELEASE_TEST_REVIEW="APPROVED"
+  RELEASE_TEST_THREADS=$'false\t0'
+  RELEASE_TEST_CONTEXTS="Build, Lint, and Test"
+  RELEASE_TEST_CHECKS=$'Build, Lint, and Test\tpending\tpull_request'
+  release_confirm() { :; }
+  gh() { release_admin_test_gh "$@"; }
+  if release_merge_pr 42 >/dev/null 2>&1; then
+    return 1
+  fi
+  ! grep -Fq 'pr merge 42' "$RELEASE_TEST_LOG"
+)
+
+test_blocked_release_pr_rejects_ruleset() (
+  RELEASE_TEST_LOG="$(mktemp)"
+  trap 'rm -f -- "$RELEASE_TEST_LOG"' EXIT
+  PK_RELEASE_VERSION="v1.2.3"
+  PK_RELEASE_VALIDATED_HEAD="abc123"
+  PK_RELEASE_VALIDATED_BASE="base123"
+  RELEASE_TEST_REVIEW="APPROVED"
+  RELEASE_TEST_THREADS=$'false\t0'
+  RELEASE_TEST_RULES="1"
+  release_confirm() { :; }
+  gh() { release_admin_test_gh "$@"; }
+  if release_merge_pr 42 >/dev/null 2>&1; then
+    return 1
+  fi
+  ! grep -Fq 'pr merge 42' "$RELEASE_TEST_LOG"
+)
+
+test_admin_merge_revalidates_after_confirmation() (
+  RELEASE_TEST_LOG="$(mktemp)"
+  trap 'rm -f -- "$RELEASE_TEST_LOG"' EXIT
+  PK_RELEASE_VERSION="v1.2.3"
+  PK_RELEASE_VALIDATED_HEAD="abc123"
+  PK_RELEASE_VALIDATED_BASE="base123"
+  RELEASE_TEST_REVIEW="APPROVED"
+  gh() { release_admin_test_gh "$@"; }
+  release_confirm() { RELEASE_TEST_REVIEW="REVIEW_REQUIRED"; }
+  if release_merge_pr 42 >/dev/null 2>&1; then
+    return 1
+  fi
+  ! grep -Fq 'pr merge 42' "$RELEASE_TEST_LOG"
+)
+
+test_admin_merge_rejects_base_change() (
+  RELEASE_TEST_LOG="$(mktemp)"
+  trap 'rm -f -- "$RELEASE_TEST_LOG"' EXIT
+  PK_RELEASE_VERSION="v1.2.3"
+  PK_RELEASE_VALIDATED_HEAD="abc123"
+  PK_RELEASE_VALIDATED_BASE="base123"
+  RELEASE_TEST_REVIEW="APPROVED"
+  RELEASE_TEST_THREADS=$'false\t0'
+  RELEASE_TEST_CONTEXTS="Build, Lint, and Test"
+  RELEASE_TEST_CHECKS=$'Build, Lint, and Test\tpass\tworkflow_dispatch'
+  gh() { release_admin_test_gh "$@"; }
+  release_confirm() { RELEASE_TEST_BASE="new-base"; }
+  if release_merge_pr 42 >/dev/null 2>&1; then
+    return 1
+  fi
+  ! grep -Fq 'pr merge 42' "$RELEASE_TEST_LOG"
+)
+
+test_blocked_release_pr_rejects_classic_protection() (
+  RELEASE_TEST_LOG="$(mktemp)"
+  trap 'rm -f -- "$RELEASE_TEST_LOG"' EXIT
+  PK_RELEASE_VERSION="v1.2.3"
+  PK_RELEASE_VALIDATED_HEAD="abc123"
+  PK_RELEASE_VALIDATED_BASE="base123"
+  RELEASE_TEST_REVIEW="APPROVED"
+  RELEASE_TEST_THREADS=$'false\t0'
+  RELEASE_TEST_CLASSIC_BLOCKER="true"
+  release_confirm() { :; }
+  gh() { release_admin_test_gh "$@"; }
+  if release_merge_pr 42 >/dev/null 2>&1; then
+    return 1
+  fi
+  ! grep -Fq 'pr merge 42' "$RELEASE_TEST_LOG"
 )
 
 test_execute_aborts_without_release_pr() (
@@ -144,6 +352,17 @@ for test_name in \
   test_unknown_option_fails \
   test_checksum_signature_policy \
   test_release_pr_dispatches_ci \
+  test_release_pr_rejects_unvalidated_head \
+  test_release_pr_rejects_stale_base \
+  test_blocked_release_pr_uses_validated_admin_merge \
+  test_blocked_release_pr_rejects_required_review \
+  test_blocked_release_pr_rejects_unresolved_conversation \
+  test_blocked_release_pr_rejects_other_required_check \
+  test_blocked_release_pr_rejects_pending_ci_event \
+  test_blocked_release_pr_rejects_ruleset \
+  test_admin_merge_revalidates_after_confirmation \
+  test_admin_merge_rejects_base_change \
+  test_blocked_release_pr_rejects_classic_protection \
   test_execute_aborts_without_release_pr \
   test_missing_release_pr_uses_config_neutral_error; do
   run_test "$test_name" || ((failures += 1))
