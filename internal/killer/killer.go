@@ -27,6 +27,14 @@ type SignalKiller struct {
 	pollInterval time.Duration
 }
 
+type targetState uint8
+
+const (
+	targetGone targetState = iota
+	targetCurrent
+	targetReused
+)
+
 var findProcess = func(pid int32) (processHandle, error) {
 	return os.FindProcess(int(pid))
 }
@@ -50,10 +58,17 @@ func (k *SignalKiller) Kill(ctx context.Context, target appProcess.Process) erro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := signalRequiredTarget(ctx, target, syscall.SIGTERM); err != nil {
+	terminated, err := signalInitialTarget(ctx, target)
+	if err != nil {
 		return err
 	}
+	if terminated {
+		return nil
+	}
+	return k.waitAndKill(ctx, target)
+}
 
+func (k *SignalKiller) waitAndKill(ctx context.Context, target appProcess.Process) error {
 	terminated, err := k.waitForExit(ctx, target)
 	if err != nil {
 		return err
@@ -76,11 +91,11 @@ func (k *SignalKiller) waitForExit(ctx context.Context, target appProcess.Proces
 		case <-waitCtx.Done():
 			return waitFinished(ctx)
 		case <-ticker.C:
-			matches, err := targetMatches(ctx, target)
+			state, err := inspectTarget(ctx, target)
 			if err != nil {
 				return false, err
 			}
-			if !matches {
+			if state != targetCurrent {
 				return true, nil
 			}
 		}
@@ -94,53 +109,55 @@ func waitFinished(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-func signalRequiredTarget(
-	ctx context.Context,
-	target appProcess.Process,
-	signal syscall.Signal,
-) error {
-	signaled, err := signalTarget(ctx, target, signal)
+func signalInitialTarget(ctx context.Context, target appProcess.Process) (bool, error) {
+	state, err := signalTarget(ctx, target, syscall.SIGTERM)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if !signaled {
-		return fmt.Errorf("process %d identity changed", target.PID)
+	if state == targetGone {
+		return true, nil
 	}
-	return nil
+	if state == targetReused {
+		return false, fmt.Errorf("process %d identity changed", target.PID)
+	}
+	return false, nil
 }
 
 func signalTarget(
 	ctx context.Context,
 	target appProcess.Process,
 	signal syscall.Signal,
-) (bool, error) {
-	matches, err := targetMatches(ctx, target)
+) (targetState, error) {
+	state, err := inspectTarget(ctx, target)
 	if err != nil {
-		return false, err
+		return state, err
 	}
-	if !matches {
-		return false, nil
+	if state != targetCurrent {
+		return state, nil
 	}
 
 	proc, err := findProcess(target.PID)
 	if err != nil {
-		return false, fmt.Errorf("finding process %d: %w", target.PID, err)
+		return state, fmt.Errorf("finding process %d: %w", target.PID, err)
 	}
-	return true, signalProcess(proc, target.PID, signal)
+	return state, signalProcess(proc, target.PID, signal)
 }
 
-func targetMatches(ctx context.Context, target appProcess.Process) (bool, error) {
+func inspectTarget(ctx context.Context, target appProcess.Process) (targetState, error) {
 	if target.CreateTime <= 0 {
-		return false, fmt.Errorf("process %d has no creation time", target.PID)
+		return targetGone, fmt.Errorf("process %d has no creation time", target.PID)
 	}
 	createTime, err := readProcessCreateTime(ctx, target.PID)
 	if processGone(err) {
-		return false, nil
+		return targetGone, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("reading process %d creation time: %w", target.PID, err)
+		return targetGone, fmt.Errorf("reading process %d creation time: %w", target.PID, err)
 	}
-	return createTime == target.CreateTime, nil
+	if createTime != target.CreateTime {
+		return targetReused, nil
+	}
+	return targetCurrent, nil
 }
 
 func processGone(err error) bool {
@@ -159,6 +176,9 @@ func signalProcess(proc processHandle, pid int32, signal syscall.Signal) error {
 		return nil
 	}
 	if errors.Is(err, os.ErrProcessDone) {
+		return nil
+	}
+	if processGone(err) {
 		return nil
 	}
 	return fmt.Errorf("sending %s to %d: %w", signal, pid, err)

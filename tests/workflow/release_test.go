@@ -113,6 +113,7 @@ func assertCIWorkflowPaths(t *testing.T, workflow string) {
 	assertContains(t, workflow, "go test -tags=e2e")
 	assertContains(t, workflow, "sh scripts/lint.sh")
 	assertContains(t, workflow, "sh scripts/security.sh")
+	assertContains(t, workflow, "bash tests/scripts/setup_test.sh")
 	assertContains(t, workflow, "release --snapshot --clean --skip=sign")
 	assertContains(t, workflow, "codecov/codecov-action@")
 }

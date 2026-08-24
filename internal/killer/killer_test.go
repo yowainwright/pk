@@ -69,6 +69,20 @@ func TestKillReturnsFindProcessErrors(t *testing.T) {
 	}
 }
 
+func TestKillTreatsMissingTargetAsTerminated(t *testing.T) {
+	proc := &fakeProcess{alive: true}
+	restoreFind := replaceFindProcess(t, proc, nil)
+	defer restoreFind()
+	restoreCreateTime := replaceCreateTimeReader(t, missingCreateTime)
+	defer restoreCreateTime()
+
+	err := testKiller().Kill(context.Background(), testTarget(42))
+	if err != nil {
+		t.Fatalf("kill: %v", err)
+	}
+	assertSignals(t, proc.signals)
+}
+
 func TestWaitForExitReturnsTrueForMissingProcess(t *testing.T) {
 	restore := replaceCreateTimeReader(t, missingCreateTime)
 	defer restore()
@@ -176,6 +190,15 @@ func TestSignalProcessIgnoresDoneProcesses(t *testing.T) {
 	err := signalProcess(proc, 42, syscall.SIGTERM)
 	if err != nil {
 		t.Fatalf("expected process done to be ignored, got %v", err)
+	}
+}
+
+func TestSignalProcessIgnoresMissingProcesses(t *testing.T) {
+	proc := &fakeProcess{err: syscall.ESRCH}
+
+	err := signalProcess(proc, 42, syscall.SIGTERM)
+	if err != nil {
+		t.Fatalf("expected missing process to be ignored, got %v", err)
 	}
 }
 
