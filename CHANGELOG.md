@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.1.1](https://github.com/yowainwright/pk/compare/v1.1.0...v1.1.1) (2026-08-06)
+
+
+### Maintenance
+
+* fix release ([177890f](https://github.com/yowainwright/pk/commit/177890f1e83b5abc3c41bbfea69d1f32ab88dbf3))
+* fix release ([d5d076f](https://github.com/yowainwright/pk/commit/d5d076ff419a5f5710fa51041665b7a2389614e3))
+* fix release ([e0226a1](https://github.com/yowainwright/pk/commit/e0226a1d000488bb783503a7f7db3d23ec0cbc42))
+* fix release ([8426a43](https://github.com/yowainwright/pk/commit/8426a43bb79ee82ee626f2fce5749a930ae30508))
+* release flow ([43e8488](https://github.com/yowainwright/pk/commit/43e8488650eddc687ee9f204d5dfb1fc62dc7e58))
+* release flow ([3234f56](https://github.com/yowainwright/pk/commit/3234f56bb7eb030cd074b78290ac61dccb653015))
+* release update ([f5c8d7c](https://github.com/yowainwright/pk/commit/f5c8d7c83db58bd5bd78cd9f2c90229eadeb674e))
+* release update ([18044e5](https://github.com/yowainwright/pk/commit/18044e5d6356b4e70d7903b9c8a70252ec4439be))
+* **root:** release update ([1ccdc8f](https://github.com/yowainwright/pk/commit/1ccdc8f382a57e1d1aea6cdf85d1874e9c3125b0))
+* **root:** release update ([2438ded](https://github.com/yowainwright/pk/commit/2438dede5c50c4d30710bc990ff5dd25fef8e8c2))
+
 ## [1.1.0](https://github.com/yowainwright/pk/compare/v1.0.0...v1.1.0) (2026-08-03)
 
 
