@@ -512,6 +512,46 @@ func TestRunStatusReturnsStatusErrors(t *testing.T) {
 	}
 }
 
+func TestRunDoctorWritesShareableDiagnostics(t *testing.T) {
+	deps := commandDeps(t)
+	deps.background.status = "active"
+	deps.docker.available = true
+	deps.audit.events = []audit.Event{{}, {}}
+	var out bytes.Buffer
+
+	err := run([]string{"doctor"}, &out)
+	if err != nil {
+		t.Fatalf("run doctor: %v", err)
+	}
+	assertMainOutputContains(t, out.String(), "version: dev")
+	assertMainOutputContains(t, out.String(), "background service: active")
+	assertMainOutputContains(t, out.String(), "docker CLI: available")
+	assertMainOutputContains(t, out.String(), "audit log: readable (2 events)")
+}
+
+func TestRunDoctorKeepsCheckErrorsPrivate(t *testing.T) {
+	deps := commandDeps(t)
+	deps.background.err = errors.New("private service path")
+	deps.audit.err = errors.New("private audit path")
+	var out bytes.Buffer
+
+	if err := run([]string{"doctor"}, &out); err != nil {
+		t.Fatalf("run doctor: %v", err)
+	}
+	assertMainOutputContains(t, out.String(), "background service: error")
+	assertMainOutputContains(t, out.String(), "audit log: unreadable")
+	if strings.Contains(out.String(), "private") {
+		t.Fatalf("doctor leaked check error: %q", out.String())
+	}
+}
+
+func assertMainOutputContains(t *testing.T, output string, expected string) {
+	t.Helper()
+	if !strings.Contains(output, expected) {
+		t.Fatalf("expected %q in output: %q", expected, output)
+	}
+}
+
 func TestRunSkillsInstallWritesSkill(t *testing.T) {
 	deps := commandDeps(t)
 	var out bytes.Buffer
@@ -789,9 +829,9 @@ type fakeCommandKiller struct {
 	pid    int32
 }
 
-func (k *fakeCommandKiller) Kill(ctx context.Context, pid int32) error {
+func (k *fakeCommandKiller) Kill(ctx context.Context, target process.Process) error {
 	k.called = true
-	k.pid = pid
+	k.pid = target.PID
 	return nil
 }
 

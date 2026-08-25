@@ -57,6 +57,15 @@ Show cleanup audit events:
 pk history
 ```
 
+Print a privacy-safe diagnostic report to paste into a bug report:
+
+```sh
+pk doctor
+```
+
+The report includes versions and component availability, but excludes paths,
+commands, process details, and audit contents.
+
 Install the bundled agent skill:
 
 ```sh
@@ -120,10 +129,27 @@ layer is implemented with the Go standard library and adds no dependencies.
 
 ## Development
 
-<!-- local Go and legibility lint commands derived from go.mod, .mise.toml, .custom-gcl.yml, .golangci.yml, and .github/workflows/ci.yml -->
+<!-- local setup, Go, and legibility commands derived from scripts/setup.sh, go.mod, .mise.toml, .custom-gcl.yml, .golangci.yml, and .github/workflows/ci.yml -->
 
-This repository pins Go, GoReleaser, and `svu` in `.mise.toml` and the custom
-linter in `.custom-gcl.yml`. Install the mise-managed tools with `mise install`.
+This repository pins Go, GoReleaser, and `svu` in `.mise.toml`. The Go
+legibility linter is pinned in `.custom-gcl.yml`, and linting uses
+`shellcheck`, `shellcheck-legibility`, and the custom Go legibility linter.
+Install the mise-managed tools and
+repository Git hooks:
+
+```sh
+brew install shellcheck
+brew tap yowainwright/shellcheck_legibility https://github.com/yowainwright/shellcheck_legibility
+brew trust --formula yowainwright/shellcheck_legibility/shellcheck-legibility
+brew install shellcheck-legibility
+mise install
+mise run setup
+```
+
+Setup runs `mise install`, writes managed hooks directly to `.git/hooks`, and
+preserves existing unmanaged hooks. The pre-commit hook checks formatting,
+linting, and Go tests; the commit-msg hook checks conventional
+commit headers; the pre-push hook runs the complete local check suite.
 
 Build and test:
 
@@ -147,7 +173,8 @@ mise run lint
 `.custom-gcl.yml` configures `golangci-lint custom` to build
 `./bin/legibility-golangci-lint` with
 `github.com/yowainwright/golangci-lint-legibility`. `.golangci.yml` configures
-the rules that binary runs.
+the rules that binary runs. `scripts/lint.sh` also runs ShellCheck and
+`shellcheck-legibility` against the setup and hook scripts.
 
 ## Release
 
@@ -160,7 +187,10 @@ mise run release
 `svu` derives the recommended version from conventional commits and supplies
 patch, minor, major, release-candidate, and custom choices. The command runs the
 complete release preview, opens the exact Release Please PR, dispatches and
-waits for its CI, asks before merging, and follows publication to completion.
+waits for its CI, verifies the tested commit, asks before merging, and follows
+publication to completion. Bot-created PRs whose required check event is
+suppressed by GitHub are merged with a commit-pinned admin override only after
+that exact commit passes CI.
 Preview without changing GitHub state with
 `bash scripts/release.sh --dry-run`.
 

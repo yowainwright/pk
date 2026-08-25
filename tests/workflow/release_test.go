@@ -102,15 +102,51 @@ func TestCIExercisesReleaseAndSecurityPaths(t *testing.T) {
 	workflow := readRepoFile(t, ".github/workflows/ci.yml")
 	script := readRepoFile(t, "scripts/release.sh")
 	security := readRepoFile(t, "scripts/security.sh")
+	assertCIWorkflowPaths(t, workflow)
+	assertReleaseScriptPaths(t, script)
+	assertSecurityToolVersions(t, security)
+}
+
+func assertCIWorkflowPaths(t *testing.T, workflow string) {
+	t.Helper()
 	assertContains(t, workflow, "workflow_dispatch:")
 	assertContains(t, workflow, "go test -tags=e2e")
 	assertContains(t, workflow, "sh scripts/lint.sh")
+	assertContains(t, workflow, "shellcheck-legibility-0.2.1.tar.gz")
+	assertContains(t, workflow, "137942db1000e72ce8f8e2fbe8c10e334c70dc554ad2ef08aa49f0778f0302c0")
+	assertMissing(t, workflow, "lint-shell")
 	assertContains(t, workflow, "sh scripts/security.sh")
-	assertContains(t, security, "v1.2.0")
-	assertContains(t, security, "v2.25.0")
+	assertContains(t, workflow, "bash tests/scripts/setup_test.sh")
 	assertContains(t, workflow, "release --snapshot --clean --skip=sign")
 	assertContains(t, workflow, "codecov/codecov-action@")
+}
+
+func assertReleaseScriptPaths(t *testing.T, script string) {
+	t.Helper()
 	assertContains(t, script, `gh workflow run "$PK_CI_WORKFLOW" --ref "$head_ref"`)
+	assertContains(t, script, `--match-head-commit "$PK_RELEASE_VALIDATED_HEAD"`)
+	assertContains(t, script, `PK_RELEASE_VALIDATED_BASE="$pr_base"`)
+	assertContains(t, script, `compare/$base...$head`)
+	assertContains(t, script, `release_require_admin_merge "$pr_number"`)
+	assertContains(t, script, `.restrictions != null`)
+	assertContains(t, script, "reviewThreads(first:100)")
+	assertContains(t, script, `PK_CI_REQUIRED_CHECK="Build, Lint, and Test"`)
+	assertContains(t, script, `arguments+=(--admin)`)
+}
+
+func assertSecurityToolVersions(t *testing.T, security string) {
+	t.Helper()
+	assertContains(t, security, "v1.2.0")
+	assertContains(t, security, "v2.25.0")
+}
+
+func TestBugReportSupportsPreDoctorReleases(t *testing.T) {
+	template := readRepoFile(t, ".github/ISSUE_TEMPLATE/bug_report.yml")
+	assertContains(t, template, "id: version")
+	assertContains(t, template, "Run `pk --version`.")
+	assertContains(t, template, "Diagnostics (if available)")
+	assertContains(t, template, "id: environment")
+	assertContains(t, template, "Architecture: arm64 or amd64")
 }
 
 func TestCaskVerificationIsShared(t *testing.T) {

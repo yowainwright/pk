@@ -20,6 +20,7 @@ Commands:
   history              Show cleanup audit events
   install --apply      Install active background cleanup
   status               Show background cleanup status
+  doctor               Print a shareable, privacy-safe diagnostic report
   uninstall            Remove background cleanup
   skills install       Install the bundled Codex skill
   skills path          Print the skill installation path
@@ -180,6 +181,8 @@ func utilityUsage(topic string) (string, bool) {
 		return "Usage: pk history\n", true
 	case "status":
 		return "Usage: pk status\n", true
+	case "doctor":
+		return "Usage: pk doctor\n", true
 	case "uninstall":
 		return "Usage: pk uninstall\n", true
 	case "version":

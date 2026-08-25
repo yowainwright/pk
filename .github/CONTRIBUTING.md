@@ -8,10 +8,13 @@ Requirements:
 - Docker for isolated process tests
 - GoReleaser and `svu` for release-sensitive changes
 
+<!-- contributor setup commands derived from .mise.toml and scripts/setup.sh -->
+
 ```sh
 git clone https://github.com/yowainwright/pk.git
 cd pk
 mise install
+mise run setup
 mise run build
 ```
 

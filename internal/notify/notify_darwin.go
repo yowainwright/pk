@@ -3,6 +3,7 @@ package notify
 import (
 	"fmt"
 	"os/exec"
+	"strings"
 )
 
 var runCommand = func(name string, args ...string) error {
@@ -15,5 +16,12 @@ func Send(title, message string) error {
 }
 
 func notificationScript(title, message string) string {
-	return fmt.Sprintf(`display notification "%s" with title "%s"`, message, title)
+	escaped := escapeScriptString(message)
+	escapedTitle := escapeScriptString(title)
+	return fmt.Sprintf(`display notification "%s" with title "%s"`, escaped, escapedTitle)
+}
+
+func escapeScriptString(value string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+	return replacer.Replace(value)
 }

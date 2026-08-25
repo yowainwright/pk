@@ -243,7 +243,7 @@ func (m *Monitor) killTree(
 	var firstErr error
 	rootKilled := false
 	for _, proc := range processtree.KillOrder(p, descendants) {
-		if err := m.killer.Kill(ctx, proc.PID); err != nil {
+		if err := m.killer.Kill(ctx, proc); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}

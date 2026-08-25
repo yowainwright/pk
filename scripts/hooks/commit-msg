@@ -1,0 +1,32 @@
+#!/usr/bin/env sh
+# Managed by pk scripts/setup.sh
+set -eu
+
+valid_commit_header() {
+  header=${1:?commit header is required}
+  case "$header" in
+  feat:\ *|feat\(*\):\ *) return 0 ;;
+  fix:\ *|fix\(*\):\ *) return 0 ;;
+  docs:\ *|docs\(*\):\ *) return 0 ;;
+  style:\ *|style\(*\):\ *) return 0 ;;
+  refactor:\ *|refactor\(*\):\ *) return 0 ;;
+  perf:\ *|perf\(*\):\ *) return 0 ;;
+  test:\ *|test\(*\):\ *) return 0 ;;
+  build:\ *|build\(*\):\ *) return 0 ;;
+  ci:\ *|ci\(*\):\ *) return 0 ;;
+  chore:\ *|chore\(*\):\ *) return 0 ;;
+  revert:\ *|revert\(*\):\ *) return 0 ;;
+  esac
+  return 1
+}
+
+main() {
+  message_path=${1:?commit message path is required}
+  commit_message="$(sed -n '1p' "$message_path")"
+  valid_commit_header "$commit_message" && exit 0
+  printf '%s\n' "Commit message must use conventional commits format" >&2
+  printf '%s\n' "Expected: <type>[optional scope]: <description>" >&2
+  exit 1
+}
+
+main "$@"

@@ -17,6 +17,7 @@ import (
 	"github.com/yowainwright/pk/internal/audit"
 	"github.com/yowainwright/pk/internal/cleanup"
 	"github.com/yowainwright/pk/internal/config"
+	"github.com/yowainwright/pk/internal/diagnostics"
 	"github.com/yowainwright/pk/internal/docker"
 	"github.com/yowainwright/pk/internal/dx"
 	"github.com/yowainwright/pk/internal/killer"
@@ -192,6 +193,8 @@ func (a application) dispatchUtility(command string, args []string) error {
 		return a.runUninstall()
 	case "status":
 		return a.runStatus()
+	case "doctor":
+		return a.runDoctor()
 	case "skills":
 		return a.runSkills(args)
 	default:
@@ -475,6 +478,38 @@ func (a application) runStatus() error {
 	return a.ui.Value(status)
 }
 
+func (a application) runDoctor() error {
+	serviceStatus, serviceErr := diagnosticServiceStatus(a.ctx)
+	auditEvents, auditErr := diagnosticAuditEvents()
+	input := diagnostics.Input{
+		Version:         displayVersion(),
+		ServiceStatus:   serviceStatus,
+		ServiceErr:      serviceErr,
+		DockerAvailable: newDockerClient().Available(),
+		AuditEvents:     auditEvents,
+		AuditErr:        auditErr,
+		AuditOverride:   os.Getenv("PK_AUDIT_PATH") != "",
+	}
+	return operationError("writing diagnostics", diagnostics.Write(a.out, diagnostics.New(input)))
+}
+
+func diagnosticServiceStatus(ctx context.Context) (string, error) {
+	manager, err := newBackgroundManager()
+	if err != nil {
+		return "", err
+	}
+	return manager.Status(ctx)
+}
+
+func diagnosticAuditEvents() (int, error) {
+	log, err := newAuditStore()
+	if err != nil {
+		return 0, err
+	}
+	events, err := log.Events()
+	return len(events), err
+}
+
 func (a application) runSkills(args []string) error {
 	command, commandArgs := splitCommand(args)
 	switch command {
@@ -755,6 +790,7 @@ func (a application) exitOnError(err error) {
 	}
 
 	a.ui.Logger().Error("pk error", "error", err)
+	a.ui.Logger().Info("Run pk doctor to create a shareable diagnostic report")
 	exitProcess(1)
 }
 
