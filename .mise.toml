@@ -32,11 +32,12 @@ run = "sh scripts/setup.sh"
 description = "Run fast commit checks"
 run = '''
 mise run fmt-check
+mise run lint
 go test ./...
 '''
 
 [tasks.lint]
-description = "Run Go vet and the custom linter"
+description = "Run shell, Go vet, and custom lint checks"
 run = "sh scripts/lint.sh"
 
 [tasks.test]
