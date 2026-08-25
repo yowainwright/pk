@@ -294,7 +294,7 @@ release_require_clear_reviews() {
 release_required_contexts() {
   local endpoint
   endpoint="repos/$PK_GITHUB_REPOSITORY/branches/main/protection/required_status_checks"
-  gh api "$endpoint" --jq '.contexts[]'
+  gh api "$endpoint" --jq '[(.contexts // [])[], (.checks // [])[].context] | unique[]'
 }
 
 release_require_no_rulesets() {

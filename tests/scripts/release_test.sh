@@ -155,6 +155,13 @@ release_admin_test_gh() {
       printf '%s\t%s\n' "${RELEASE_TEST_HEAD:-abc123}" "${RELEASE_TEST_BASE:-base123}" ;;
     'api graphql '*) printf '%s\n' "$RELEASE_TEST_THREADS" ;;
     'api repos/'*'/rules/branches/main '*) printf '%s\n' "${RELEASE_TEST_RULES:-0}" ;;
+    'api repos/'*'/required_status_checks --jq '*'checks'*)
+      if [[ -n "${RELEASE_TEST_CONTEXTS_WITH_CHECKS:-}" ]]; then
+        printf '%s\n' "$RELEASE_TEST_CONTEXTS_WITH_CHECKS"
+      else
+        printf '%s\n' "$RELEASE_TEST_CONTEXTS"
+      fi
+      ;;
     'api repos/'*'/required_status_checks '*) printf '%s\n' "$RELEASE_TEST_CONTEXTS" ;;
     'api repos/'*'/branches/main/protection '*) \
       printf '%s\n' "${RELEASE_TEST_CLASSIC_BLOCKER:-false}" ;;
@@ -221,6 +228,25 @@ test_blocked_release_pr_rejects_other_required_check() (
   RELEASE_TEST_THREADS=$'false\t0'
   RELEASE_TEST_CONTEXTS=$'Build, Lint, and Test\nSecurity Scans'
   RELEASE_TEST_CHECKS=$'Build, Lint, and Test\tpass\tworkflow_dispatch\nSecurity Scans\tpending\tpull_request'
+  release_confirm() { :; }
+  gh() { release_admin_test_gh "$@"; }
+  if release_merge_pr 42 >/dev/null 2>&1; then
+    return 1
+  fi
+  ! grep -Fq 'pr merge 42' "$RELEASE_TEST_LOG"
+)
+
+test_blocked_release_pr_rejects_app_bound_required_check() (
+  RELEASE_TEST_LOG="$(mktemp)"
+  trap 'rm -f -- "$RELEASE_TEST_LOG"' EXIT
+  PK_RELEASE_VERSION="v1.2.3"
+  PK_RELEASE_VALIDATED_HEAD="abc123"
+  PK_RELEASE_VALIDATED_BASE="base123"
+  RELEASE_TEST_REVIEW="APPROVED"
+  RELEASE_TEST_THREADS=$'false\t0'
+  RELEASE_TEST_CONTEXTS="Build, Lint, and Test"
+  RELEASE_TEST_CONTEXTS_WITH_CHECKS=$'Build, Lint, and Test\nGreptile Review'
+  RELEASE_TEST_CHECKS=$'Build, Lint, and Test\tpass\tworkflow_dispatch\nGreptile Review\tpending\tpull_request'
   release_confirm() { :; }
   gh() { release_admin_test_gh "$@"; }
   if release_merge_pr 42 >/dev/null 2>&1; then
@@ -358,6 +384,7 @@ for test_name in \
   test_blocked_release_pr_rejects_required_review \
   test_blocked_release_pr_rejects_unresolved_conversation \
   test_blocked_release_pr_rejects_other_required_check \
+  test_blocked_release_pr_rejects_app_bound_required_check \
   test_blocked_release_pr_rejects_pending_ci_event \
   test_blocked_release_pr_rejects_ruleset \
   test_admin_merge_revalidates_after_confirmation \
