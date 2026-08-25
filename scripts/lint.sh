@@ -21,10 +21,28 @@ read_linter_version() {
   printf '%s\n' "$linter_version"
 }
 
+config_checksum() {
+  cksum .custom-gcl.yml
+}
+
+custom_linter_stamp_path() {
+  custom_linter_path=${1:?custom linter path is required}
+  printf '%s\n' "$custom_linter_path.config.cksum"
+}
+
+custom_linter_config_changed() {
+  custom_linter_path=${1:?custom linter path is required}
+  stamp_path="$(custom_linter_stamp_path "$custom_linter_path")"
+  [ -f "$stamp_path" ] || return 0
+  current_checksum="$(config_checksum)"
+  saved_checksum="$(sed -n '1p' "$stamp_path")"
+  [ "$current_checksum" != "$saved_checksum" ]
+}
+
 custom_linter_needs_build() {
   custom_linter_path=${1:?custom linter path is required}
   [ ! -x "$custom_linter_path" ] && return 0
-  [ .custom-gcl.yml -nt "$custom_linter_path" ] && return 0
+  custom_linter_config_changed "$custom_linter_path" && return 0
   built_go_version="$(
     go version -m "$custom_linter_path" 2>/dev/null | awk 'NR == 1 { print $2 }'
   )"
@@ -47,9 +65,11 @@ build_custom_linter_if_needed() {
   custom_linter_path=${2:?custom linter path is required}
   custom_linter_needs_build "$custom_linter_path" || return 0
   "$linter_path" custom
+  config_checksum > "$(custom_linter_stamp_path "$custom_linter_path")"
 }
 
 run_go_lint() {
+  require_command cksum
   linter_version="$(read_linter_version)"
   linter_package="github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$linter_version"
   linter_path="$PWD/bin/tools/golangci-lint-$linter_version/golangci-lint"
