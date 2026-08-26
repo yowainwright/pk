@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.2.0](https://github.com/yowainwright/pk/compare/v1.1.1...v1.2.0) (2026-08-25)
+
+
+### Features
+
+* adds initial observability ([9dd005a](https://github.com/yowainwright/pk/commit/9dd005a377d08dff27d4e2f8e325a9bbe5b35fb7))
+
+
+### Bug Fixes
+
+* fixes lint script issue ([3c72fe0](https://github.com/yowainwright/pk/commit/3c72fe0f9cc22bb3e73d3f955ca097fc24ea380b))
+* more darwin fixes ([00dc99e](https://github.com/yowainwright/pk/commit/00dc99ede293b309e8582a562653b013f108e471))
+
+
+### Maintenance
+
+* add diagnostics ([12aa036](https://github.com/yowainwright/pk/commit/12aa036a0f47be03a77da06411a28ab78858a8ab))
+* adds more checks ([19debda](https://github.com/yowainwright/pk/commit/19debdad4fab8b6ac49cfc989fd9def050229273))
+* adds more dev config ([403fb8c](https://github.com/yowainwright/pk/commit/403fb8c5df03766527b7a9866d5d9c16f12b5e87))
+* fixes ([fbfa2bf](https://github.com/yowainwright/pk/commit/fbfa2bffb7fe74fafeeb059e806fe375c65a6aa5))
+* merge remote ([7d4d630](https://github.com/yowainwright/pk/commit/7d4d63072c522b5a8432c8046626624c20e953ae))
+* release updates ([187cb7d](https://github.com/yowainwright/pk/commit/187cb7d76f70b3a2d2e56d11668974b28ced879d))
+
 ## [1.1.1](https://github.com/yowainwright/pk/compare/v1.1.0...v1.1.1) (2026-08-06)
 
 
