@@ -1,8 +1,17 @@
 # pk
 
+<!-- project badges matching GitHub repository, CI workflow, OpenSSF Scorecard, and Codecov upload -->
+
+[![GitHub release](https://img.shields.io/github/v/release/yowainwright/pk?sort=semver)](https://github.com/yowainwright/pk/releases)
+[![CI](https://github.com/yowainwright/pk/actions/workflows/ci.yml/badge.svg)](https://github.com/yowainwright/pk/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/yowainwright/pk/badge)](https://scorecard.dev/viewer/?uri=github.com/yowainwright/pk)
+[![codecov](https://codecov.io/gh/yowainwright/pk/branch/main/graph/badge.svg)](https://codecov.io/gh/yowainwright/pk)
+
 Safe-by-default local process cleanup CLI for agent and development work.
 
 ## Installation
+
+<!-- install commands matching go.mod module path and Homebrew cask release configuration -->
 
 Install the latest release with Homebrew:
 
@@ -16,9 +25,36 @@ Or install with Go 1.26 or newer:
 go install github.com/yowainwright/pk/cmd/pk@latest
 ```
 
-## Usage
+## CLI
 
-<!-- CLI commands implemented by cmd/pk/main.go -->
+`pk` previews local process cleanup by default. Direct commands below assume
+the Homebrew or Go install shown above.
+
+> Run `pk --help` or `pk help <command>` for current command help.
+
+<!-- CLI command usage and options implemented by cmd/pk/usage.go, cmd/pk/main.go, and internal/config/config.go -->
+
+### Commands
+
+```sh
+Usage:
+  pk <command> [options]
+
+Commands:
+  scan                 Preview matching processes
+  cleanup              Record cleanup targets without applying actions
+  monitor              Watch process thresholds without applying actions
+  history              Show cleanup audit events
+  install --apply      Install active background cleanup
+  status               Show background cleanup status
+  doctor               Print a shareable, privacy-safe diagnostic report
+  uninstall            Remove background cleanup
+  skills install       Install the bundled Codex skill
+  skills path          Print the skill installation path
+  version              Print the version
+```
+
+### Common Flows
 
 Scan restartable development processes without killing anything:
 
@@ -51,130 +87,82 @@ pk cleanup --scope processes
 pk cleanup --scope containers
 ```
 
-Show cleanup audit events:
-
-```sh
-pk history
-```
-
-Print a privacy-safe diagnostic report to paste into a bug report:
-
-```sh
-pk doctor
-```
-
-The report includes versions and component availability, but excludes paths,
-commands, process details, and audit contents.
-
-Install the bundled agent skill:
-
-```sh
-pk skills install
-```
-
-Print where the skill will be installed:
-
-```sh
-pk skills path
-```
-
-Install active background cleanup for the current user:
+Install, check, or remove active background cleanup:
 
 ```sh
 pk install --apply
-```
-
-Check or remove background cleanup:
-
-```sh
 pk status
 pk uninstall
 ```
 
-Run the existing threshold monitor:
+Inspect history, diagnostics, and bundled skills:
 
 ```sh
-pk monitor
+pk history
+pk doctor
+pk skills install
+pk skills path
 ```
 
-The monitor previews matching processes by default. Apply threshold-based
-termination explicitly:
+### Option Reference
 
-```sh
-pk monitor --apply
-```
+Every destructive mode requires an explicit `--apply` flag.
+
+Global options:
+
+- `--color=auto|always|never` controls terminal color.
+
+Process options:
+
+- `--cpu PERCENT` sets the CPU threshold. Default: `80`.
+- `--mem MB` sets the memory threshold. Default: `8192`.
+- `--interval DURATION` sets the check interval. Default: `3s`.
+- `--grace DURATION` sets the grace period before termination. Default: `30s`.
+- `--protected NAMES` appends comma-separated process names to the protected
+  set.
+
+Cleanup options:
+
+- `cleanup --scope all|processes|containers` limits cleanup. Default: `all`.
+- `cleanup --watch` repeats cleanup on the configured interval.
+
+Utility options:
+
+- `skills install --dir PATH` installs the bundled skill to a custom root.
 
 Background cleanup uses `launchd` on macOS and `systemd --user` on Linux. It
-runs `pk cleanup --apply --watch` with no external dependencies. Cleanup kills
-target process trees child-first, infers agent/session-owned restartable
-processes, stops matching local Docker Compose/devcontainer containers when
-Docker is available, and writes bounded JSONL audit events. Set `PK_AUDIT_PATH`
-to override the default audit file location. `pk skills install` writes the
-bundled skill to `$PK_SKILLS_DIR`, `$CODEX_HOME/skills`, or `~/.codex/skills`.
-
-Running `pk` without a command prints help. Every destructive mode requires an
-explicit `--apply` flag.
-
-Color is automatic on interactive terminals and can be controlled globally:
-
-```sh
-pk --color=always scan
-pk cleanup --color=never
-```
-
-`--color` accepts `auto`, `always`, or `never`. Rich output is disabled for
-pipes, CI, `TERM=dumb`, and `NO_COLOR`. Data remains plain on stdout; prompts,
-loaders, completion shimmer, and structured status output use stderr. The UI
-layer is implemented with the Go standard library and adds no dependencies.
+runs `pk cleanup --apply --watch`. Cleanup writes bounded JSONL audit events;
+set `PK_AUDIT_PATH` to override the default audit file. `doctor` excludes
+paths, commands, process details, and audit contents.
 
 ## Development
 
-<!-- local setup, Go, and legibility commands derived from scripts/setup.sh, go.mod, .mise.toml, .custom-gcl.yml, .golangci.yml, and .github/workflows/ci.yml -->
+<!-- local setup and check commands derived from .mise.toml and scripts/setup.sh -->
 
-This repository pins Go, GoReleaser, and `svu` in `.mise.toml`. The Go
-legibility linter is pinned in `.custom-gcl.yml`, and linting uses
-`shellcheck`, `shellcheck-legibility`, and the custom Go legibility linter.
-Install the mise-managed tools and
-repository Git hooks:
+Set up tools and hooks:
 
 ```sh
-brew install shellcheck
-brew tap yowainwright/shellcheck_legibility https://github.com/yowainwright/shellcheck_legibility
-brew trust --formula yowainwright/shellcheck_legibility/shellcheck-legibility
-brew install shellcheck-legibility
 mise install
 mise run setup
 ```
 
-Setup runs `mise install`, writes managed hooks directly to `.git/hooks`, and
-preserves existing unmanaged hooks. The pre-commit hook checks formatting,
-linting, and Go tests; the commit-msg hook checks conventional
-commit headers; the pre-push hook runs the complete local check suite.
-
-Build and test:
+Run the local check suite:
 
 ```sh
-mise run build
 mise run check
 ```
 
-Run black-box CLI tests plus isolated process termination in Docker:
+Useful focused commands:
 
 ```sh
-./tests/e2e/test.sh
-```
-
-Run the same pinned custom lint checks CI runs:
-
-```sh
+mise run build
 mise run lint
+mise run test-e2e
+mise run test-process-e2e
+mise run security
 ```
 
-`.custom-gcl.yml` configures `golangci-lint custom` to build
-`./bin/legibility-golangci-lint` with
-`github.com/yowainwright/golangci-lint-legibility`. `.golangci.yml` configures
-the rules that binary runs. `scripts/lint.sh` also runs ShellCheck and
-`shellcheck-legibility` against the setup and hook scripts.
+ShellCheck and `shellcheck-legibility` are required for `mise run lint`.
 
 ## Release
 
