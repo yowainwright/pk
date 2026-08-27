@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.0](https://github.com/yowainwright/pk/compare/v1.2.0...v1.3.0) (2026-08-26)
+
+
+### Features
+
+* adds codependencerc ([1dfbab1](https://github.com/yowainwright/pk/commit/1dfbab1f1fa7da04e555f3133436e8cf9973a2ee))
+* adds codependencerc ([9852817](https://github.com/yowainwright/pk/commit/9852817e1e583e4e1ef7ef0b3f1007f87f3d5247))
+
 ## [1.2.0](https://github.com/yowainwright/pk/compare/v1.1.1...v1.2.0) (2026-08-25)
 
 
