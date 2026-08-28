@@ -40,6 +40,22 @@ go test ./...
 description = "Run shell, Go vet, and custom lint checks"
 run = "sh scripts/lint.sh"
 
+[tasks.lint-agent]
+description = "Run strict changed-file lint for agent edits"
+run = "sh scripts/lint.sh --agent"
+
+[tasks.lint-all]
+description = "Run lint checks with all-file legibility reporting"
+run = "sh scripts/lint.sh --all"
+
+[tasks.lint-agent-all]
+description = "Run strict lint for every Go package"
+run = "sh scripts/lint.sh --agent --all"
+
+[tasks.lint-legibility-setup]
+description = "Build the custom Go legibility linter"
+run = "sh scripts/lint.sh --setup-only"
+
 [tasks.test]
 description = "Run race-enabled tests"
 run = "go test -race ./..."

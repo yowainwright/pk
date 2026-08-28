@@ -48,7 +48,7 @@ jobs:
           printf '%s\n' "$RUNNER_TEMP/shellcheck-legibility/bin" >> "$GITHUB_PATH"
 
       - name: Lint
-        run: sh scripts/lint.sh
+        run: sh scripts/lint.sh --all
 
       - name: Build
         run: CGO_ENABLED=0 go build -trimpath ./...

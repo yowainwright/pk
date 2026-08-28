@@ -33,6 +33,7 @@ EOF
 create_test_repository() {
   repository=${1:?repository is required}
   mkdir -p "$repository/scripts" "$repository/bin"
+  cp "$TEST_ROOT/scripts/lint-session.sh" "$repository/scripts/lint-session.sh"
   cp "$TEST_ROOT/scripts/setup.sh" "$repository/scripts/setup.sh"
   cp -R "$TEST_ROOT/scripts/hooks" "$repository/scripts/hooks"
   cp "$TEST_ROOT/.custom-gcl.yml" "$repository/.custom-gcl.yml"
@@ -75,6 +76,7 @@ assert_setup_commands() {
   repository=${1:?repository is required}
   grep -Fxq install "$repository/mise.log"
   grep -Fxq 'run lint' "$repository/mise.log"
+  grep -Fxq 'run lint-legibility-setup' "$repository/mise.log"
   ! grep -Fq lint-shell "$repository/mise.log"
 }
 
@@ -89,6 +91,14 @@ assert_command_fails() {
   status=$?
   set -e
   [[ "$status" -ne 0 ]]
+}
+
+assert_agent_hooks_created() {
+  repository=${1:?repository is required}
+  [[ -f "$repository/.codex/hooks.json" ]]
+  [[ -f "$repository/.claude/settings.json" ]]
+  grep -Fq 'scripts/lint-session.sh' "$repository/.codex/hooks.json"
+  grep -Fq 'scripts/lint-session.sh' "$repository/.claude/settings.json"
 }
 
 run_hook() {
@@ -111,6 +121,7 @@ test_setup_installs_hooks_and_runs_mise() {
   assert_installed_hook "$repository" pre-push
   assert_hook_command "$repository" pre-commit '  exec mise run hook-pre-commit'
   assert_hook_command "$repository" pre-push '  exec mise run check'
+  assert_agent_hooks_created "$repository"
   grep -Fq 'conventional commits format' "$repository/.git/hooks/commit-msg"
   assert_setup_commands "$repository"
   [[ ! -e "$repository/.githooks" ]]
@@ -135,6 +146,7 @@ test_setup_hooks_only_skips_mise() {
   run_setup "$repository" --hooks-only >/dev/null
 
   assert_installed_hook "$repository" pre-commit
+  assert_agent_hooks_created "$repository"
   [[ ! -e "$repository/mise.log" ]]
 }
 
@@ -174,6 +186,31 @@ test_setup_preserves_configured_hooks_path() {
   assert_setup_fails "$repository"
 
   [[ ! -e "$repository/shared-hooks/pre-commit" ]]
+}
+
+test_setup_merges_existing_claude_settings() {
+  repository="$(new_test_repository)"
+  create_test_repository "$repository"
+  mkdir -p "$repository/.claude"
+  printf '{"permissions":{"allow":["Read"]}}\n' > "$repository/.claude/settings.json"
+
+  run_setup "$repository" --hooks-only >/dev/null
+
+  grep -Fq 'scripts/lint-session.sh' "$repository/.claude/settings.json"
+  grep -Fq '"permissions"' "$repository/.claude/settings.json"
+}
+
+test_setup_uses_local_settings_for_claude_symlink() {
+  repository="$(new_test_repository)"
+  create_test_repository "$repository"
+  mkdir -p "$repository/.claude"
+  ln -s "$repository/missing-settings.json" "$repository/.claude/settings.json"
+  printf '{"hooks":{"PostToolUse":[]}}\n' > "$repository/.claude/settings.local.json"
+
+  run_setup "$repository" --hooks-only >/dev/null
+
+  [[ -L "$repository/.claude/settings.json" ]]
+  grep -Fq 'scripts/lint-session.sh' "$repository/.claude/settings.local.json"
 }
 
 test_setup_requires_go_legibility_config() {
@@ -218,6 +255,8 @@ test_names() {
     test_installed_hooks_execute_expected_tasks \
     test_setup_preserves_unmanaged_hooks \
     test_setup_preserves_configured_hooks_path \
+    test_setup_merges_existing_claude_settings \
+    test_setup_uses_local_settings_for_claude_symlink \
     test_setup_requires_go_legibility_config
 }
 
