@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -314,7 +315,7 @@ func reportsForOutput() []Report {
 
 func testConfig(t *testing.T, args ...string) *config.Config {
 	t.Helper()
-	cfg, err := config.ParseArgs("test", args)
+	cfg, err := config.ParseArgsWithOutput("test", args, io.Discard, nil)
 	if err != nil {
 		t.Fatalf("parse config: %v", err)
 	}

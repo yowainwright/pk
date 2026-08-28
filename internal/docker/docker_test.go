@@ -13,6 +13,10 @@ import (
 	"github.com/yowainwright/pk/internal/audit"
 )
 
+func NewClientWithRunner(runner CommandRunner) *CLIClient {
+	return &CLIClient{runner: runner}
+}
+
 func TestReportsTargetsComposeContainers(t *testing.T) {
 	container := testContainer()
 

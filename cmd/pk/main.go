@@ -126,15 +126,6 @@ func main() {
 	app.exitOnError(err)
 }
 
-func run(args []string, out io.Writer) error {
-	ctx := context.Background()
-	app, commandArgs, err := newApplication(ctx, args, strings.NewReader(""), out, io.Discard)
-	if err != nil {
-		return err
-	}
-	return app.run(commandArgs)
-}
-
 func newApplication(
 	ctx context.Context,
 	args []string,
@@ -556,10 +547,6 @@ func scanReports(ctx context.Context, cfg *config.Config) ([]scan.Report, error)
 	return scanner.Scan(ctx)
 }
 
-func cleanupConfig(args []string) (*config.Config, cleanupOptions, error) {
-	return cleanupConfigWithOutput(args, io.Discard)
-}
-
 func cleanupConfigWithOutput(
 	args []string,
 	output io.Writer,
@@ -774,11 +761,6 @@ func newMonitor(
 func notifyKilled(name string, pid int32) error {
 	msg := fmt.Sprintf("Killed %s (PID %d)", name, pid)
 	return operationError("sending kill notification", sendNotification("pk", msg))
-}
-
-func exitOnError(err error) {
-	ui := dx.New(dx.Config{Err: os.Stderr, Timestamps: true})
-	application{ctx: context.Background(), ui: ui, out: os.Stdout}.exitOnError(err)
 }
 
 func (a application) exitOnError(err error) {

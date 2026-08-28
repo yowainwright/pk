@@ -43,18 +43,6 @@ var defaultProtected = []string{
 	"pk",
 }
 
-func ParseArgs(name string, args []string) (*Config, error) {
-	return ParseArgsWithOutput(name, args, io.Discard, nil)
-}
-
-func ParseArgsWith(
-	name string,
-	args []string,
-	registerExtra func(*flag.FlagSet),
-) (*Config, error) {
-	return ParseArgsWithOutput(name, args, io.Discard, registerExtra)
-}
-
 func ParseArgsWithOutput(
 	name string,
 	args []string,

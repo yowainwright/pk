@@ -15,10 +15,29 @@ import (
 	"github.com/yowainwright/pk/internal/audit"
 	"github.com/yowainwright/pk/internal/config"
 	"github.com/yowainwright/pk/internal/docker"
+	"github.com/yowainwright/pk/internal/dx"
 	"github.com/yowainwright/pk/internal/killer"
 	"github.com/yowainwright/pk/internal/process"
 	"github.com/yowainwright/pk/internal/scan"
 )
+
+func run(args []string, out io.Writer) error {
+	ctx := context.Background()
+	app, commandArgs, err := newApplication(ctx, args, strings.NewReader(""), out, io.Discard)
+	if err != nil {
+		return err
+	}
+	return app.run(commandArgs)
+}
+
+func cleanupConfig(args []string) (*config.Config, cleanupOptions, error) {
+	return cleanupConfigWithOutput(args, io.Discard)
+}
+
+func exitOnError(err error) {
+	ui := dx.New(dx.Config{Err: os.Stderr, Timestamps: true})
+	application{ctx: context.Background(), ui: ui, out: os.Stdout}.exitOnError(err)
+}
 
 func TestRunPrintsVersion(t *testing.T) {
 	var out bytes.Buffer
@@ -682,8 +701,21 @@ func TestNotifyKilledReturnsNotificationErrors(t *testing.T) {
 }
 
 func TestExitOnErrorIgnoresExpectedErrors(t *testing.T) {
+	oldExitProcess := exitProcess
+	defer func() {
+		exitProcess = oldExitProcess
+	}()
+	exited := false
+	exitProcess = func(int) {
+		exited = true
+	}
+
 	exitOnError(nil)
 	exitOnError(context.Canceled)
+
+	if exited {
+		t.Fatal("expected no exit for expected errors")
+	}
 }
 
 func TestExitOnErrorExitsForUnexpectedErrors(t *testing.T) {
