@@ -78,7 +78,7 @@ run_shell_lint() {
   require_command shellcheck-legibility
   set -- scripts/lint-session.sh scripts/lint.sh scripts/lib/go-tool.sh scripts/setup.sh
   set -- "$@" scripts/hooks/commit-msg scripts/hooks/pre-commit
-  set -- "$@" scripts/hooks/pre-push tests/scripts/setup_test.sh
+  set -- "$@" tests/scripts/setup_test.sh
   shellcheck -x "$@"
   shellcheck-legibility check "$@" scripts/hooks
 }

@@ -70,7 +70,7 @@ hook_template() {
   root=${1:?repository root is required}
   hook_name=${2:?hook name is required}
   case "$hook_name" in
-  pre-commit|commit-msg|pre-push) printf '%s\n' "$root/scripts/hooks/$hook_name" ;;
+  pre-commit|commit-msg) printf '%s\n' "$root/scripts/hooks/$hook_name" ;;
   *) fail "Unknown hook: $hook_name" ;;
   esac
 }
@@ -88,16 +88,25 @@ install_hook() {
   mv "$temporary_path" "$hook_path"
 }
 
+remove_retired_hook() {
+  hooks_path=${1:?hooks path is required}
+  hook_name=${2:?hook name is required}
+  hook_path="$hooks_path/$hook_name"
+  [ -e "$hook_path" ] || return 0
+  [ ! -L "$hook_path" ] || return 0
+  managed_hook "$hook_path" || return 0
+  rm -f "$hook_path"
+}
+
 install_hooks() {
   root=${1:?repository root is required}
   hooks_path=${2:?hooks path is required}
   mkdir -p "$hooks_path"
+  remove_retired_hook "$hooks_path" pre-push
   validate_hook "$hooks_path/pre-commit"
   validate_hook "$hooks_path/commit-msg"
-  validate_hook "$hooks_path/pre-push"
   install_hook "$root" "$hooks_path" pre-commit
   install_hook "$root" "$hooks_path" commit-msg
-  install_hook "$root" "$hooks_path" pre-push
 }
 
 codex_hooks_path() {
