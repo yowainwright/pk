@@ -33,6 +33,20 @@ func TestParseArgsUsesDefaults(t *testing.T) {
 	if cfg.Interval != 3*time.Second {
 		t.Fatalf("expected default interval, got %s", cfg.Interval)
 	}
+	if cfg.StaleLimit != 0 {
+		t.Fatalf("expected default stale limit, got %s", cfg.StaleLimit)
+	}
+}
+
+func TestDefaultConfigMatchesParseDefaults(t *testing.T) {
+	cfg, err := Default()
+	if err != nil {
+		t.Fatalf("default config: %v", err)
+	}
+	parsed := mustParse(t)
+	if cfg.StaleLimit != parsed.StaleLimit {
+		t.Fatalf("expected stale limit %s, got %s", parsed.StaleLimit, cfg.StaleLimit)
+	}
 }
 
 func TestParseArgsAddsProtectedNames(t *testing.T) {
@@ -95,6 +109,14 @@ func TestParseArgsRejectsNegativeGracePeriods(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected grace error")
+	}
+}
+
+func TestParseArgsRejectsNegativeStaleLimits(t *testing.T) {
+	_, err := ParseArgs("test", testArgs("-stale", "-1s"))
+
+	if err == nil {
+		t.Fatal("expected stale error")
 	}
 }
 

@@ -46,6 +46,16 @@ func TestGetProcessInfoReadsCurrentProcess(t *testing.T) {
 	}
 }
 
+func TestCreateTimeReadsCurrentProcess(t *testing.T) {
+	createTime, err := CreateTime(context.Background(), int32(os.Getpid()))
+	if err != nil {
+		t.Fatalf("create time: %v", err)
+	}
+	if createTime == 0 {
+		t.Fatal("expected create time")
+	}
+}
+
 func TestGetProcessInfoReturnsNameErrors(t *testing.T) {
 	proc := testSystemProcess()
 	proc.nameErr = errors.New("name denied")

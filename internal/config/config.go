@@ -13,6 +13,7 @@ type Config struct {
 	MemoryThreshold uint64
 	Interval        time.Duration
 	GracePeriod     time.Duration
+	StaleLimit      time.Duration
 	Protected       []string
 }
 
@@ -41,6 +42,17 @@ var defaultProtected = []string{
 	"codex",
 	"claude",
 	"pk",
+}
+
+func Default() (*Config, error) {
+	cfg := &Config{
+		CPUThreshold:    80,
+		MemoryThreshold: 8192,
+		Interval:        3 * time.Second,
+		GracePeriod:     30 * time.Second,
+		StaleLimit:      0,
+	}
+	return finishConfig(cfg, "")
 }
 
 func ParseArgsWithOutput(
@@ -92,6 +104,7 @@ func registerFlags(flags *flag.FlagSet, cfg *Config) *string {
 	flags.Uint64Var(&cfg.MemoryThreshold, "mem", 8192, "Memory threshold in MB")
 	flags.DurationVar(&cfg.Interval, "interval", 3*time.Second, "Check interval")
 	flags.DurationVar(&cfg.GracePeriod, "grace", 30*time.Second, "Grace period before kill")
+	flags.DurationVar(&cfg.StaleLimit, "stale", 0, "Inactive agent session age before kill")
 	flags.StringVar(&protectedStr, "protected", "", "Comma-separated process names to protect")
 	return &protectedStr
 }
@@ -116,6 +129,9 @@ func validate(cfg *Config) error {
 	}
 	if cfg.GracePeriod < 0 {
 		return fmt.Errorf("grace period must not be negative")
+	}
+	if cfg.StaleLimit < 0 {
+		return fmt.Errorf("stale limit must not be negative")
 	}
 	return nil
 }
