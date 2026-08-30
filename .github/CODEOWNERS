@@ -3,7 +3,6 @@
 /.github/ @yowainwright
 /.goreleaser.yaml @yowainwright
 /.mise.toml @yowainwright
-/release-please-config.json @yowainwright
 
 /cmd/ @yowainwright
 /internal/ @yowainwright

@@ -2,9 +2,12 @@ package lifecycle
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -13,14 +16,14 @@ import (
 const (
 	privateDirMode  = 0o700
 	privateFileMode = 0o600
+	eventFile       = "lifecycle.jsonl"
+	processingFile  = "lifecycle.processing.jsonl"
+	stateFile       = "lifecycle-state.json"
+	lockFileName    = "lifecycle.lock"
 )
 
 type Store struct {
-	dir            string
-	eventPath      string
-	processingPath string
-	statePath      string
-	lockPath       string
+	dir string
 }
 
 func DefaultDir() (string, error) {
@@ -40,13 +43,7 @@ func DefaultStore() (*Store, error) {
 }
 
 func NewStore(dir string) *Store {
-	return &Store{
-		dir:            dir,
-		eventPath:      filepath.Join(dir, "lifecycle.jsonl"),
-		processingPath: filepath.Join(dir, "lifecycle.processing.jsonl"),
-		statePath:      filepath.Join(dir, "lifecycle-state.json"),
-		lockPath:       filepath.Join(dir, "lifecycle.lock"),
-	}
+	return &Store{dir: dir}
 }
 
 func (s *Store) Append(event Event) error {
@@ -56,8 +53,8 @@ func (s *Store) Append(event Event) error {
 	if err := ensurePrivateDir(s.dir); err != nil {
 		return err
 	}
-	return s.withLock(func() error {
-		return appendJSONLine(s.eventPath, event)
+	return s.withLock(func(root *os.Root) error {
+		return appendJSONLine(root, eventFile, event)
 	})
 }
 
@@ -66,12 +63,12 @@ func (s *Store) Events() ([]Event, error) {
 		return nil, err
 	}
 	var events []Event
-	err := s.withLock(func() error {
-		pending, err := readEventPath(s.processingPath)
+	err := s.withLock(func(root *os.Root) error {
+		pending, err := readEventPath(root, processingFile)
 		if err != nil {
 			return err
 		}
-		current, err := readEventPath(s.eventPath)
+		current, err := readEventPath(root, eventFile)
 		if err != nil {
 			return err
 		}
@@ -86,12 +83,12 @@ func (s *Store) TakeEvents() ([]Event, error) {
 		return nil, err
 	}
 	var events []Event
-	err := s.withLock(func() error {
-		if err := rotateEvents(s.eventPath, s.processingPath); err != nil {
+	err := s.withLock(func(root *os.Root) error {
+		if err := rotateEvents(root, eventFile, processingFile); err != nil {
 			return err
 		}
 		var readErr error
-		events, readErr = readEventPath(s.processingPath)
+		events, readErr = readEventPath(root, processingFile)
 		return readErr
 	})
 	return events, err
@@ -101,13 +98,13 @@ func (s *Store) AcknowledgeEvents() error {
 	if err := ensurePrivateDir(s.dir); err != nil {
 		return err
 	}
-	return s.withLock(func() error {
-		return removeOptional(s.processingPath)
+	return s.withLock(func(root *os.Root) error {
+		return removeOptional(root, processingFile)
 	})
 }
 
-func readEventPath(path string) ([]Event, error) {
-	file, err := os.Open(path)
+func readEventPath(root *os.Root, name string) ([]Event, error) {
+	file, err := root.Open(name)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -120,11 +117,11 @@ func readEventPath(path string) ([]Event, error) {
 	return readEvents(file)
 }
 
-func rotateEvents(eventPath string, processingPath string) error {
-	if fileExists(processingPath) {
+func rotateEvents(root *os.Root, eventName string, processingName string) error {
+	if fileExists(root, processingName) {
 		return nil
 	}
-	err := os.Rename(eventPath, processingPath)
+	err := root.Rename(eventName, processingName)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -134,13 +131,23 @@ func rotateEvents(eventPath string, processingPath string) error {
 	return nil
 }
 
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
+func fileExists(root *os.Root, name string) bool {
+	_, err := root.Stat(name)
 	return err == nil
 }
 
 func (s *Store) LoadState() (State, error) {
-	file, err := os.Open(s.statePath)
+	root, err := os.OpenRoot(s.dir)
+	if os.IsNotExist(err) {
+		return State{}, nil
+	}
+	if err != nil {
+		return State{}, fmt.Errorf("opening lifecycle dir: %w", err)
+	}
+	defer func() {
+		_ = root.Close()
+	}()
+	file, err := root.Open(stateFile)
 	if os.IsNotExist(err) {
 		return State{}, nil
 	}
@@ -162,7 +169,14 @@ func (s *Store) SaveState(state State) error {
 	if err := ensurePrivateDir(s.dir); err != nil {
 		return err
 	}
-	return writeAtomic(s.statePath, append(data, '\n'))
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		return fmt.Errorf("opening lifecycle dir: %w", err)
+	}
+	defer func() {
+		_ = root.Close()
+	}()
+	return writeAtomic(root, stateFile, append(data, '\n'))
 }
 
 func ensurePrivateDir(path string) error {
@@ -172,8 +186,8 @@ func ensurePrivateDir(path string) error {
 	return os.Chmod(path, privateDirMode)
 }
 
-func appendJSONLine(path string, event Event) error {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, privateFileMode)
+func appendJSONLine(root *os.Root, name string, event Event) error {
+	file, err := root.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_APPEND, privateFileMode)
 	if err != nil {
 		return fmt.Errorf("opening lifecycle events: %w", err)
 	}
@@ -226,24 +240,42 @@ func decodeState(file *os.File) (State, error) {
 	return state, nil
 }
 
-func writeAtomic(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	file, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+func writeAtomic(root *os.Root, name string, data []byte) error {
+	tempName, err := tempFileName(name)
+	if err != nil {
+		return err
+	}
+	file, err := root.OpenFile(tempName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, privateFileMode)
 	if err != nil {
 		return fmt.Errorf("creating lifecycle temp file: %w", err)
 	}
-	return finishAtomicWrite(file, path, data)
+	return finishAtomicWrite(root, file, tempName, name, data)
 }
 
-func finishAtomicWrite(file *os.File, path string, data []byte) error {
-	tempPath := file.Name()
+func tempFileName(name string) (string, error) {
+	var token [8]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return "", fmt.Errorf("creating lifecycle temp name: %w", err)
+	}
+	encoded := hex.EncodeToString(token[:])
+	tempName := "." + name + "." + encoded + ".tmp"
+	return tempName, nil
+}
+
+func finishAtomicWrite(
+	root *os.Root,
+	file *os.File,
+	tempName string,
+	name string,
+	data []byte,
+) error {
 	defer func() {
-		_ = os.Remove(tempPath)
+		_ = root.Remove(tempName)
 	}()
 	if err := writeTemp(file, data); err != nil {
 		return err
 	}
-	return os.Rename(tempPath, path)
+	return root.Rename(tempName, name)
 }
 
 func writeTemp(file *os.File, data []byte) error {
@@ -266,16 +298,23 @@ func closeAfterWriteError(file *os.File, err error) error {
 	return err
 }
 
-func removeOptional(path string) error {
-	err := os.Remove(path)
+func removeOptional(root *os.Root, name string) error {
+	err := root.Remove(name)
 	if os.IsNotExist(err) {
 		return nil
 	}
 	return err
 }
 
-func (s *Store) withLock(fn func() error) error {
-	file, err := os.OpenFile(s.lockPath, os.O_CREATE|os.O_RDWR, privateFileMode)
+func (s *Store) withLock(fn func(*os.Root) error) error {
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		return fmt.Errorf("opening lifecycle dir: %w", err)
+	}
+	defer func() {
+		_ = root.Close()
+	}()
+	file, err := root.OpenFile(lockFileName, os.O_CREATE|os.O_RDWR, privateFileMode)
 	if err != nil {
 		return fmt.Errorf("opening lifecycle lock: %w", err)
 	}
@@ -286,11 +325,15 @@ func (s *Store) withLock(fn func() error) error {
 		return err
 	}
 	defer unlockFile(file)
-	return fn()
+	return fn(root)
 }
 
 func lockFile(file *os.File) error {
-	err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
+	fd, err := fileDescriptor(file)
+	if err != nil {
+		return err
+	}
+	err = syscall.Flock(fd, syscall.LOCK_EX)
 	if err != nil {
 		return fmt.Errorf("locking lifecycle store: %w", err)
 	}
@@ -298,5 +341,17 @@ func lockFile(file *os.File) error {
 }
 
 func unlockFile(file *os.File) {
-	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	fd, err := fileDescriptor(file)
+	if err != nil {
+		return
+	}
+	_ = syscall.Flock(fd, syscall.LOCK_UN)
+}
+
+func fileDescriptor(file *os.File) (int, error) {
+	fd := file.Fd()
+	if fd > uintptr(math.MaxInt) {
+		return 0, fmt.Errorf("file descriptor out of range: %d", fd)
+	}
+	return int(fd), nil
 }

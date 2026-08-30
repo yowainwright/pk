@@ -55,6 +55,24 @@ func TestInstallSystemdWritesUnitAndStartsService(t *testing.T) {
 	assertCommands(t, runner, "systemctl --user enable --now pk.service")
 }
 
+func TestInstallSystemdRollsBackWhenShellInstallFails(t *testing.T) {
+	runner := &fakeRunner{}
+	manager := testManager(t, "linux", runner)
+	manager.zdotdir = filepath.Join(manager.home, "blocked")
+	if err := os.WriteFile(manager.zdotdir, []byte("file"), 0o600); err != nil {
+		t.Fatalf("writing blocked zdotdir: %v", err)
+	}
+
+	if err := manager.Install(context.Background()); err == nil {
+		t.Fatal("expected shell install error")
+	}
+
+	assertMissingServiceFile(t, manager)
+	assertShellPluginFileMissing(t, manager)
+	assertCommands(t, runner, "systemctl --user disable --now pk.service")
+	assertCommandCount(t, runner, "systemctl --user daemon-reload", 2)
+}
+
 func assertServiceMode(t *testing.T, manager *Manager) {
 	t.Helper()
 	info, err := os.Stat(manager.servicePath())
@@ -137,12 +155,18 @@ func assertShellPluginInstalled(t *testing.T, manager *Manager) {
 func assertShellPluginRemoved(t *testing.T, manager *Manager) {
 	t.Helper()
 	installer := manager.shellInstaller()
-	if _, err := os.Stat(installer.PluginPath()); !os.IsNotExist(err) {
-		t.Fatalf("expected removed shell plugin, got %v", err)
-	}
+	assertShellPluginFileMissing(t, manager)
 	data := readPath(t, installer.ZshrcPath())
 	if strings.Contains(data, installer.SourceLine()) {
 		t.Fatalf("expected source line removed:\n%s", data)
+	}
+}
+
+func assertShellPluginFileMissing(t *testing.T, manager *Manager) {
+	t.Helper()
+	installer := manager.shellInstaller()
+	if _, err := os.Stat(installer.PluginPath()); !os.IsNotExist(err) {
+		t.Fatalf("expected removed shell plugin, got %v", err)
 	}
 }
 

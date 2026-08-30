@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"os/signal"
 	"strconv"
@@ -845,7 +846,9 @@ func parseSessionFlags(
 	if err := flags.Parse(args); err != nil {
 		return lifecycle.Event{}, exitCodeArg{}, err
 	}
-	applySessionPIDs(&event, pids)
+	if err := applySessionPIDs(&event, pids); err != nil {
+		return lifecycle.Event{}, exitCodeArg{}, err
+	}
 	return event, exitCode, nil
 }
 
@@ -888,10 +891,10 @@ func registerSessionProcessFlags(
 	event *lifecycle.Event,
 	pids *sessionPIDs,
 ) {
-	flags.IntVar(&pids.shellPID, "shell-pid", 0, "Shell pid")
+	flags.Int64Var(&pids.shellPID, "shell-pid", 0, "Shell pid")
 	flags.Int64Var(&event.ShellCreateTime, "shell-create-time", 0, "Shell create time")
-	flags.IntVar(&pids.parentPID, "parent-pid", 0, "Parent pid")
-	flags.IntVar(&pids.processPID, "process-pid", 0, "Process pid")
+	flags.Int64Var(&pids.parentPID, "parent-pid", 0, "Parent pid")
+	flags.Int64Var(&pids.processPID, "process-pid", 0, "Process pid")
 	flags.Int64Var(&event.ProcessCreateTime, "process-create-time", 0, "Process create time")
 	flags.StringVar(&event.TTY, "tty", "", "TTY")
 	flags.StringVar(&event.Cwd, "cwd", "", "Working directory")
@@ -910,10 +913,33 @@ func registerExitCodeFlag(flags *flag.FlagSet, exitCode *exitCodeArg) {
 	})
 }
 
-func applySessionPIDs(event *lifecycle.Event, pids sessionPIDs) {
-	event.ShellPID = int32(pids.shellPID)
-	event.ParentPID = int32(pids.parentPID)
-	event.ProcessPID = int32(pids.processPID)
+func applySessionPIDs(event *lifecycle.Event, pids sessionPIDs) error {
+	shellPID, err := int32PID(pids.shellPID, "shell pid")
+	if err != nil {
+		return err
+	}
+	parentPID, err := int32PID(pids.parentPID, "parent pid")
+	if err != nil {
+		return err
+	}
+	processPID, err := int32PID(pids.processPID, "process pid")
+	if err != nil {
+		return err
+	}
+	event.ShellPID = shellPID
+	event.ParentPID = parentPID
+	event.ProcessPID = processPID
+	return nil
+}
+
+func int32PID(pid int64, name string) (int32, error) {
+	belowZero := pid < 0
+	aboveMax := pid > math.MaxInt32
+	invalidPID := belowZero || aboveMax
+	if invalidPID {
+		return 0, fmt.Errorf("%s out of range: %d", name, pid)
+	}
+	return int32(pid), nil // #nosec G115 -- bounds checked before conversion.
 }
 
 func (a application) hydrateSessionEvent(event lifecycle.Event) (lifecycle.Event, error) {
@@ -930,9 +956,9 @@ func (a application) hydrateSessionEvent(event lifecycle.Event) (lifecycle.Event
 }
 
 type sessionPIDs struct {
-	shellPID   int
-	parentPID  int
-	processPID int
+	shellPID   int64
+	parentPID  int64
+	processPID int64
 }
 
 type exitCodeArg struct {

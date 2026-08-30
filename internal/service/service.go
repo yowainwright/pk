@@ -66,7 +66,18 @@ func (m *Manager) Install(ctx context.Context) error {
 	if err := m.installService(ctx); err != nil {
 		return err
 	}
-	return m.shellInstaller().Install()
+	if err := m.shellInstaller().Install(); err != nil {
+		return m.rollbackServiceAfterShellInstall(ctx, err)
+	}
+	return nil
+}
+
+func (m *Manager) rollbackServiceAfterShellInstall(ctx context.Context, cause error) error {
+	if err := ctx.Err(); err != nil {
+		return lifecycleError(cause, "rolling back service install", err)
+	}
+	recovery := m.uninstallService(ctx)
+	return lifecycleError(cause, "rolling back service install", recovery)
 }
 
 func (m *Manager) installService(ctx context.Context) error {

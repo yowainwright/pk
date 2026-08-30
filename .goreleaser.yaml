@@ -43,7 +43,6 @@ signs:
 
 release:
   draft: true
-  use_existing_draft: true
   replace_existing_artifacts: true
   mode: keep-existing
   prerelease: auto

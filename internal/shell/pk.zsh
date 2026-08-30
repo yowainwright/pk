@@ -50,7 +50,7 @@ _pk_emit() {
   if [[ -n "$exit_code" ]]; then
     args+=(--exit-code "$exit_code")
   fi
-  "$_pk_bin" "${args[@]}" >/dev/null 2>&1 &!
+  "$_pk_bin" "${args[@]}" >/dev/null 2>&1
 }
 
 _pk_preexec() {

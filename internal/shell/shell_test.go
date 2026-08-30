@@ -18,6 +18,7 @@ func TestInstallWritesPluginAndZshrcLine(t *testing.T) {
 	assertFileContains(t, installer.PluginPath(), "__session")
 	assertFileContains(t, installer.PluginPath(), "--tab-id")
 	assertFileContains(t, installer.PluginPath(), "--window-id")
+	assertFileMissingText(t, installer.PluginPath(), "&!")
 	assertFileContains(t, installer.ZshrcPath(), installer.SourceLine())
 	assertMode(t, installer.PluginPath(), pluginMode)
 }
@@ -86,6 +87,20 @@ func TestZDOTDIRSelectsZshrcLocation(t *testing.T) {
 	assertFileContains(t, expected, installer.SourceLine())
 }
 
+func TestInstallRemovesPluginWhenZshrcWriteFails(t *testing.T) {
+	installer := testInstaller(t)
+	installer.ZDOTDIR = filepath.Join(installer.Home, "blocked")
+	if err := os.WriteFile(installer.ZDOTDIR, []byte("file"), 0o600); err != nil {
+		t.Fatalf("writing blocked zdotdir: %v", err)
+	}
+
+	if err := installer.Install(); err == nil {
+		t.Fatal("expected install failure")
+	}
+
+	assertFileMissing(t, installer.PluginPath())
+}
+
 func testInstaller(t *testing.T) Installer {
 	t.Helper()
 	return Installer{
@@ -99,6 +114,14 @@ func assertFileContains(t *testing.T, path string, expected string) {
 	data := readFile(t, path)
 	if !strings.Contains(data, expected) {
 		t.Fatalf("%s missing %q:\n%s", path, expected, data)
+	}
+}
+
+func assertFileMissingText(t *testing.T, path string, unexpected string) {
+	t.Helper()
+	data := readFile(t, path)
+	if strings.Contains(data, unexpected) {
+		t.Fatalf("%s contains %q:\n%s", path, unexpected, data)
 	}
 }
 

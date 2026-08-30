@@ -6,7 +6,7 @@ Requirements:
 
 - Go and mise versions declared in `.mise.toml`
 - Docker for isolated process tests
-- GoReleaser and `svu` for release-sensitive changes
+- GoReleaser for release-sensitive changes
 
 <!-- contributor setup commands derived from .mise.toml and scripts/setup.sh -->
 

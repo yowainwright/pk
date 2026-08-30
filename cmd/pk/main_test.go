@@ -624,6 +624,21 @@ func TestRunSessionAppendsLifecycleEvent(t *testing.T) {
 	assertSessionEventExitCode(t, event)
 }
 
+func TestRunSessionRejectsOutOfRangePID(t *testing.T) {
+	commandDeps(t)
+	var out bytes.Buffer
+	args := sessionArgs()
+	args = append(args, "--process-pid", "2147483648")
+
+	err := run(args, &out)
+	if err == nil {
+		t.Fatal("expected pid range error")
+	}
+	if !strings.Contains(err.Error(), "process pid out of range") {
+		t.Fatalf("expected pid range error, got %v", err)
+	}
+}
+
 func assertSessionEventExitCode(t *testing.T, event lifecycle.Event) {
 	t.Helper()
 	missingExitCode := event.ExitCode == nil

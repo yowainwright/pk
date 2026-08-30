@@ -105,28 +105,22 @@ mise run check
 
 ## Release
 
-Start an interactive release from a clean, synchronized `main` branch:
+Select and validate a release candidate from a clean, synchronized `main`
+branch:
 
 ```sh
 mise run release
 ```
 
-`svu` derives the recommended version from conventional commits and supplies
-patch, minor, major, release-candidate, and custom choices. The command runs the
-complete release preview, opens the exact Release Please PR, dispatches and
-waits for its CI, verifies the tested commit, asks before merging, and follows
-publication to completion. Bot-created PRs whose required check event is
-suppressed by GitHub are merged with a commit-pinned admin override only after
-that exact commit passes CI.
-Preview without changing GitHub state with
-`bash scripts/release.sh --dry-run`.
-
-Release Please owns the changelog, version commit, tag, and draft release.
-GoReleaser builds four binaries, generates checksums and a Homebrew cask, and
-signs the checksum with keyless cosign. The non-canceling publisher verifies
-the draft, assets, signature, and generated cask before publication. Stable
-releases update `yowainwright/homebrew-tap`; prereleases do not.
-Maintenance commits use `chore:` and remain eligible for patch releases.
+The release script accepts `v0` semantic versions only. It suggests release
+candidates from existing `v0.*` tags, runs the complete local release preview,
+verifies that the version is unused, then asks before tagging, pushing the tag,
+and dispatching the release workflow. Pass a version to skip the selector:
+`mise run release v0.1.0-rc.1`. GoReleaser builds four binaries, generates
+checksums and a Homebrew cask, and signs the checksum with keyless cosign. The
+non-canceling publisher verifies the assets, signature, and generated cask
+before publication. Stable releases update `yowainwright/homebrew-tap`;
+prereleases do not.
 
 ## Contributing and Support
 

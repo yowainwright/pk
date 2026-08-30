@@ -2,7 +2,9 @@ package shell
 
 import (
 	_ "embed"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,7 +33,10 @@ func (i Installer) Install() error {
 	if err := writePlugin(i.PluginPath(), i.Executable); err != nil {
 		return err
 	}
-	return appendSourceLine(i.ZshrcPath(), i.SourceLine())
+	if err := appendSourceLine(i.ZshrcPath(), i.SourceLine()); err != nil {
+		return rollbackPluginInstall(i.PluginPath(), err)
+	}
+	return nil
 }
 
 func (i Installer) Uninstall() error {
@@ -94,14 +99,40 @@ func appendSourceLine(path string, line string) error {
 }
 
 func readOptional(path string) (string, error) {
-	data, err := os.ReadFile(path)
+	rootDir, name := splitRootPath(path)
+	root, err := os.OpenRoot(rootDir)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("opening shell rc dir: %w", err)
+	}
+	defer func() {
+		_ = root.Close()
+	}()
+	file, err := root.Open(name)
 	if os.IsNotExist(err) {
 		return "", nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("reading shell rc: %w", err)
 	}
+	defer func() {
+		_ = file.Close()
+	}()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return "", fmt.Errorf("reading shell rc: %w", err)
+	}
 	return string(data), nil
+}
+
+func splitRootPath(path string) (string, string) {
+	dir, name := filepath.Split(path)
+	if dir == "" {
+		return ".", name
+	}
+	return filepath.Clean(dir), name
 }
 
 func sourceLineExists(contents string, line string) bool {
@@ -169,4 +200,11 @@ func removePlugin(path string) error {
 		return nil
 	}
 	return err
+}
+
+func rollbackPluginInstall(path string, cause error) error {
+	if err := removePlugin(path); err != nil {
+		return errors.Join(cause, fmt.Errorf("removing shell plugin: %w", err))
+	}
+	return cause
 }
