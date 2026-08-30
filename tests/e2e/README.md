@@ -7,7 +7,7 @@ Run the full suite:
 ```
 
 `cli_test.go` builds and executes the public CLI against temporary homes,
-audit logs, skills directories, and fake service/Docker executables.
+audit logs, shell plugin installs, and fake service/Docker executables.
 
 `test-process-cleanup.sh` cross-builds Linux binaries and runs the real process
 scanner, monitor preview, process-tree killer, and audit history inside Docker.

@@ -57,10 +57,6 @@ func NewClient() *CLIClient {
 	return &CLIClient{runner: execRunner{}}
 }
 
-func NewClientWithRunner(runner CommandRunner) *CLIClient {
-	return &CLIClient{runner: runner}
-}
-
 func (c *CLIClient) Available() bool {
 	_, err := c.runner.LookPath("docker")
 	return err == nil

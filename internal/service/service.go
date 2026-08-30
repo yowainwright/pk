@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	pkShell "github.com/yowainwright/pk/internal/shell"
 )
 
 const (
@@ -26,6 +28,7 @@ type Manager struct {
 	goos       string
 	home       string
 	executable string
+	zdotdir    string
 	uid        string
 	runner     Runner
 }
@@ -41,7 +44,9 @@ func DefaultManager() (*Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("finding home dir: %w", err)
 	}
-	return NewManager(runtime.GOOS, home, executable, currentUID(), commandRunner{}), nil
+	manager := NewManager(runtime.GOOS, home, executable, currentUID(), commandRunner{})
+	manager.zdotdir = os.Getenv("ZDOTDIR")
+	return manager, nil
 }
 
 func NewManager(
@@ -58,6 +63,26 @@ func (m *Manager) Install(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := m.installService(ctx); err != nil {
+		return err
+	}
+	if err := m.shellInstaller().Install(); err != nil {
+		return m.rollbackServiceAfterShellInstall(err)
+	}
+	return nil
+}
+
+func (m *Manager) rollbackServiceAfterShellInstall(cause error) error {
+	if m.goos == "darwin" {
+		return m.rollbackLaunchdInstall(cause)
+	}
+	if m.goos == "linux" {
+		return m.rollbackSystemdInstall(cause)
+	}
+	return lifecycleError(cause, "rolling back service install", unsupported(m.goos))
+}
+
+func (m *Manager) installService(ctx context.Context) error {
 	if m.goos == "darwin" {
 		return m.installLaunchd(ctx)
 	}
@@ -71,6 +96,12 @@ func (m *Manager) Uninstall(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	serviceErr := m.uninstallService(ctx)
+	shellErr := m.shellInstaller().Uninstall()
+	return errors.Join(serviceErr, shellErr)
+}
+
+func (m *Manager) uninstallService(ctx context.Context) error {
 	if m.goos == "darwin" {
 		return m.uninstallLaunchd(ctx)
 	}
@@ -143,12 +174,20 @@ func (m *Manager) checkSupported() error {
 }
 
 func serviceArgs() []string {
-	return []string{"cleanup", "--apply", "--watch"}
+	return []string{"__daemon"}
 }
 
 func (m *Manager) command() []string {
 	command := []string{m.executable}
 	return append(command, serviceArgs()...)
+}
+
+func (m *Manager) shellInstaller() pkShell.Installer {
+	return pkShell.Installer{
+		Home:       m.home,
+		ZDOTDIR:    m.zdotdir,
+		Executable: m.executable,
+	}
 }
 
 func (m *Manager) installed() bool {

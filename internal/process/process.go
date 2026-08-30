@@ -42,6 +42,18 @@ func NewLister() *GopsutilLister {
 	return &GopsutilLister{}
 }
 
+func CreateTime(ctx context.Context, pid int32) (int64, error) {
+	proc, err := process.NewProcessWithContext(ctx, pid)
+	if err != nil {
+		return 0, fmt.Errorf("opening process %d: %w", pid, err)
+	}
+	createTime, err := proc.CreateTimeWithContext(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("reading process %d create time: %w", pid, err)
+	}
+	return createTime, nil
+}
+
 func (l *GopsutilLister) List(ctx context.Context) ([]Process, error) {
 	procs, err := listProcesses(ctx)
 	if err != nil {

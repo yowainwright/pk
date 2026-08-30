@@ -70,7 +70,7 @@ hook_template() {
   root=${1:?repository root is required}
   hook_name=${2:?hook name is required}
   case "$hook_name" in
-  pre-commit|commit-msg|pre-push) printf '%s\n' "$root/scripts/hooks/$hook_name" ;;
+  pre-commit|commit-msg) printf '%s\n' "$root/scripts/hooks/$hook_name" ;;
   *) fail "Unknown hook: $hook_name" ;;
   esac
 }
@@ -88,16 +88,198 @@ install_hook() {
   mv "$temporary_path" "$hook_path"
 }
 
+remove_retired_hook() {
+  hooks_path=${1:?hooks path is required}
+  hook_name=${2:?hook name is required}
+  hook_path="$hooks_path/$hook_name"
+  [ -e "$hook_path" ] || return 0
+  [ ! -L "$hook_path" ] || return 0
+  managed_hook "$hook_path" || return 0
+  rm -f "$hook_path"
+}
+
 install_hooks() {
   root=${1:?repository root is required}
   hooks_path=${2:?hooks path is required}
   mkdir -p "$hooks_path"
+  remove_retired_hook "$hooks_path" pre-push
   validate_hook "$hooks_path/pre-commit"
   validate_hook "$hooks_path/commit-msg"
-  validate_hook "$hooks_path/pre-push"
   install_hook "$root" "$hooks_path" pre-commit
   install_hook "$root" "$hooks_path" commit-msg
-  install_hook "$root" "$hooks_path" pre-push
+}
+
+codex_hooks_path() {
+  root=${1:?repository root is required}
+  printf '%s\n' "$root/.codex/hooks.json"
+}
+
+claude_settings_path() {
+  root=${1:?repository root is required}
+  claude_local_settings_path_if_needed "$root" && return
+  printf '%s\n' "$root/.claude/settings.json"
+}
+
+claude_local_settings_path_if_needed() {
+  root=${1:?repository root is required}
+  [ -L "$root/.claude/settings.json" ] || return 1
+  printf '%s\n' "$root/.claude/settings.local.json"
+}
+
+lint_session_command() {
+  # shellcheck disable=SC2016
+  printf '%s\n' 'sh \"$(git rev-parse --show-toplevel)/scripts/lint-session.sh\"'
+}
+
+claude_lint_session_command() {
+  # shellcheck disable=SC2016
+  printf '%s\n' 'sh \"$CLAUDE_PROJECT_DIR/scripts/lint-session.sh\"'
+}
+
+claude_lint_session_command_raw() {
+  # shellcheck disable=SC2016
+  printf '%s\n' 'sh "$CLAUDE_PROJECT_DIR/scripts/lint-session.sh"'
+}
+
+claude_direct_agent_lint_command_raw() {
+  # shellcheck disable=SC2016
+  printf '%s\n' 'sh "$CLAUDE_PROJECT_DIR/scripts/lint.sh" --agent'
+}
+
+codex_hooks_prefix() {
+  printf '%s\n' \
+    '{' \
+    '  "description": "Strict Go legibility lint for agent edits in this workspace.",' \
+    '  "hooks": {' \
+    '    "PostToolUse": [' \
+    '      {' \
+    '        "matcher": "apply_patch|Edit|MultiEdit|Write",' \
+    '        "hooks": [' \
+    '          {' \
+    '            "type": "command",'
+}
+
+codex_hooks_suffix() {
+  printf '%s\n' \
+    '            "command": "'"$command"'",' \
+    '            "timeout": 120,' \
+    '            "statusMessage": "Checking Go legibility"' \
+    '          }' \
+    '        ]' \
+    '      }' \
+    '    ]' \
+    '  }' \
+    '}'
+}
+
+codex_hooks_content() {
+  command="$(lint_session_command)"
+  codex_hooks_prefix
+  codex_hooks_suffix
+}
+
+claude_settings_content() {
+  command="$(claude_lint_session_command)"
+  printf '%s\n' \
+    '{' \
+    '  "hooks": {' \
+    '    "PostToolUse": [' \
+    '      {' \
+    '        "matcher": "Edit|MultiEdit|Write",' \
+    '        "hooks": [' \
+    '          {' \
+    '            "type": "command",' \
+    '            "command": "'"$command"'",' \
+    '            "timeout": 120' \
+    '          }' \
+    '        ]' \
+    '      }' \
+    '    ]' \
+    '  }' \
+    '}'
+}
+
+claude_settings_remove_filter() {
+  # shellcheck disable=SC2016
+  printf '%s\n' \
+    'def session_hook($current; $direct):' \
+    '  [.hooks[]?.command // ""] | any(. == $current or . == $direct);' \
+    '.hooks.PostToolUse = ((.hooks.PostToolUse // []) | map(select(session_hook($current; $direct) | not)))'
+}
+
+claude_settings_add_filter() {
+  # shellcheck disable=SC2016
+  printf '%s\n' '.hooks.PostToolUse = ((.hooks.PostToolUse // []) + [$hook])'
+}
+
+claude_lint_session_hook_json() {
+  command="$(claude_lint_session_command_raw)"
+  jq -n --arg command "$command" '{matcher:"Edit|MultiEdit|Write",hooks:[{type:"command",command:$command,timeout:120}]}'
+}
+
+file_contains_lint_session() {
+  path=${1:?path is required}
+  [ -f "$path" ] && grep -Fq 'scripts/lint-session.sh' "$path"
+}
+
+file_contains_direct_agent_lint() {
+  path=${1:?path is required}
+  [ -f "$path" ] && grep -Fq 'scripts/lint.sh' "$path" && grep -Fq -- '--agent' "$path"
+}
+
+write_codex_hooks() {
+  path=${1:?codex hooks path is required}
+  [ -f "$path" ] && file_contains_lint_session "$path" && return
+  [ ! -f "$path" ] || file_contains_direct_agent_lint "$path" || fail "Refusing to replace existing Codex hooks: $path"
+  mkdir -p "$(dirname "$path")"
+  codex_hooks_content > "$path"
+}
+
+write_claude_settings() {
+  path=${1:?claude settings path is required}
+  [ -L "$path" ] && fail "Refusing to replace Claude settings symlink: $path"
+  write_new_claude_settings_if_missing "$path"
+  file_contains_lint_session "$path" && return
+  merge_claude_settings "$path"
+}
+
+write_new_claude_settings_if_missing() {
+  path=${1:?claude settings path is required}
+  [ -f "$path" ] && return
+  mkdir -p "$(dirname "$path")"
+  claude_settings_content > "$path"
+}
+
+merge_claude_settings() {
+  path=${1:?claude settings path is required}
+  require_command jq
+  temporary_path="$path.pk-agent.$$"
+  remove_claude_session_hooks "$path" "$temporary_path"
+  append_claude_hook "$temporary_path" "$path"
+  rm -f "$temporary_path"
+}
+
+remove_claude_session_hooks() {
+  source_path=${1:?source path is required}
+  target_path=${2:?target path is required}
+  current_command="$(claude_lint_session_command_raw)"
+  direct_command="$(claude_direct_agent_lint_command_raw)"
+  filter="$(claude_settings_remove_filter)"
+  jq --arg current "$current_command" --arg direct "$direct_command" "$filter" "$source_path" > "$target_path"
+}
+
+append_claude_hook() {
+  source_path=${1:?source path is required}
+  target_path=${2:?target path is required}
+  hook_json="$(claude_lint_session_hook_json)"
+  filter="$(claude_settings_add_filter)"
+  jq --argjson hook "$hook_json" "$filter" "$source_path" > "$target_path"
+}
+
+install_agent_hooks() {
+  root=${1:?repository root is required}
+  write_codex_hooks "$(codex_hooks_path "$root")"
+  write_claude_settings "$(claude_settings_path "$root")"
 }
 
 has_golangci_legibility_plugin() {
@@ -124,6 +306,8 @@ run_setup_checks() {
   mise run lint
   log "Checking Go legibility configuration..."
   verify_go_legibility_config
+  log "Checking Go legibility binary..."
+  mise run lint-legibility-setup
 }
 
 setup_repository() {
@@ -134,6 +318,7 @@ setup_repository() {
   reject_configured_hooks_path "$root"
   hooks_path="$(hooks_dir "$root")"
   install_hooks "$root" "$hooks_path"
+  install_agent_hooks "$root"
   log "Installed managed hooks in $hooks_path"
   [ "$mode" = "--hooks-only" ] && return
   install_mise_tools

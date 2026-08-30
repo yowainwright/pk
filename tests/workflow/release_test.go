@@ -1,70 +1,15 @@
 package workflow_test
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-type releaseConfig struct {
-	Packages map[string]packageConfig `json:"packages"`
-}
-
-type packageConfig struct {
-	ChangelogSections []changelogSection `json:"changelog-sections"`
-	Draft             bool               `json:"draft"`
-	ForceTagCreation  bool               `json:"force-tag-creation"`
-}
-
-type changelogSection struct {
-	Type   string `json:"type"`
-	Hidden bool   `json:"hidden"`
-}
-
-func TestReleasePleaseCreatesTaggedDrafts(t *testing.T) {
-	var config releaseConfig
-	data := readRepoFile(t, "release-please-config.json")
-	if err := json.Unmarshal([]byte(data), &config); err != nil {
-		t.Fatalf("parse release config: %v", err)
-	}
-	root := config.Packages["."]
-	if !root.Draft {
-		t.Fatalf("expected draft configuration, got %#v", root)
-	}
-	if !root.ForceTagCreation {
-		t.Fatalf("expected tagged draft configuration, got %#v", root)
-	}
-}
-
-func TestReleasePleaseIncludesMaintenanceCommits(t *testing.T) {
-	var config releaseConfig
-	data := readRepoFile(t, "release-please-config.json")
-	if err := json.Unmarshal([]byte(data), &config); err != nil {
-		t.Fatalf("parse release config: %v", err)
-	}
-	for _, section := range config.Packages["."].ChangelogSections {
-		isVisibleChore := section.Type == "chore" && !section.Hidden
-		if isVisibleChore {
-			return
-		}
-	}
-	t.Fatal("expected visible chore changelog section")
-}
-
-func TestReleasePleaseDispatchesPublisher(t *testing.T) {
-	workflow := readRepoFile(t, ".github/workflows/release-please.yml")
-	assertContains(t, workflow, "gh workflow run release.yml")
-	assertContains(t, workflow, "release-as: ${{ inputs.release_as }}")
-	assertContains(t, workflow, "needs: release-please")
-	assertContains(t, workflow, "cancel-in-progress: false")
-	assertMissing(t, workflow, "uses: ./.github/workflows/release.yml")
-}
-
-func TestGoReleaserTargetsExistingDraft(t *testing.T) {
+func TestGoReleaserCreatesDraft(t *testing.T) {
 	config := readRepoFile(t, ".goreleaser.yaml")
-	assertContains(t, config, "use_existing_draft: true")
+	assertContains(t, config, "draft: true")
 	assertContains(t, config, "mode: keep-existing")
 	assertContains(t, config, "artifacts: checksum")
 	assertContains(t, config, "homebrew_casks:")
@@ -123,15 +68,16 @@ func assertCIWorkflowPaths(t *testing.T, workflow string) {
 
 func assertReleaseScriptPaths(t *testing.T, script string) {
 	t.Helper()
-	assertContains(t, script, `gh workflow run "$PK_CI_WORKFLOW" --ref "$head_ref"`)
-	assertContains(t, script, `--match-head-commit "$PK_RELEASE_VALIDATED_HEAD"`)
-	assertContains(t, script, `PK_RELEASE_VALIDATED_BASE="$pr_base"`)
-	assertContains(t, script, `compare/$base...$head`)
-	assertContains(t, script, `release_require_admin_merge "$pr_number"`)
-	assertContains(t, script, `.restrictions != null`)
-	assertContains(t, script, "reviewThreads(first:100)")
-	assertContains(t, script, `PK_CI_REQUIRED_CHECK="Build, Lint, and Test"`)
-	assertContains(t, script, `arguments+=(--admin)`)
+	assertContains(t, script, `release_validate_version "$PK_RELEASE_VERSION"`)
+	assertContains(t, script, `Version must be v-prefixed v0 SemVer`)
+	assertContains(t, script, `release_require_available_version`)
+	assertContains(t, script, `git ls-remote --exit-code --tags origin`)
+	assertContains(t, script, `mise run release-preview`)
+	assertContains(t, script, `release_select_version`)
+	assertContains(t, script, `git tag "$PK_RELEASE_VERSION"`)
+	assertContains(t, script, `git push origin "$PK_RELEASE_VERSION"`)
+	assertContains(t, script, `gh workflow run "$PK_PUBLISH_WORKFLOW" --ref main`)
+	assertMissing(t, script, "release"+"-please")
 }
 
 func assertSecurityToolVersions(t *testing.T, security string) {
