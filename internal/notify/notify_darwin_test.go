@@ -37,6 +37,15 @@ func TestNotificationScriptIncludesTitleAndMessage(t *testing.T) {
 	}
 }
 
+func TestNotificationScriptEscapesInjectionCharacters(t *testing.T) {
+	script := notificationScript("pk", `Killed a" & do shell script "id" & "\`)
+	want := `display notification "Killed a\" & do shell script \"id\" & \"\\" with title "pk"`
+
+	if script != want {
+		t.Fatalf("expected script %q, got %q", want, script)
+	}
+}
+
 func assertNotificationCommand(t *testing.T, name string, args []string) {
 	t.Helper()
 	if name != "osascript" {

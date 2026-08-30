@@ -2,7 +2,9 @@
 
 ## Bugs
 
-Use the [bug report form]. Include the `pk` version, operating system, architecture, install method, exact command, and redacted output.
+Use the [bug report form]. Include the output from `pk doctor`, the install
+method, exact command, and redacted command output. The diagnostic report is
+local-only and excludes paths, commands, process details, and audit contents.
 
 ## Feature Requests
 

@@ -11,6 +11,7 @@ const bytesPerMegabyte = 1024 * 1024
 
 type Process struct {
 	PID         int32
+	CreateTime  int64
 	ParentPID   int32
 	Name        string
 	CommandLine string
@@ -27,6 +28,7 @@ type GopsutilLister struct{}
 
 type systemProcess interface {
 	NameWithContext(context.Context) (string, error)
+	CreateTimeWithContext(context.Context) (int64, error)
 	MemoryInfoWithContext(context.Context) (*process.MemoryInfoStat, error)
 	PpidWithContext(context.Context) (int32, error)
 	CmdlineWithContext(context.Context) (string, error)
@@ -38,6 +40,18 @@ var listProcesses = process.ProcessesWithContext
 
 func NewLister() *GopsutilLister {
 	return &GopsutilLister{}
+}
+
+func CreateTime(ctx context.Context, pid int32) (int64, error) {
+	proc, err := process.NewProcessWithContext(ctx, pid)
+	if err != nil {
+		return 0, fmt.Errorf("opening process %d: %w", pid, err)
+	}
+	createTime, err := proc.CreateTimeWithContext(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("reading process %d create time: %w", pid, err)
+	}
+	return createTime, nil
 }
 
 func (l *GopsutilLister) List(ctx context.Context) ([]Process, error) {
@@ -68,9 +82,13 @@ func getProcessInfo(ctx context.Context, pid int32, p systemProcess) (Process, e
 	if err != nil {
 		return Process{}, err
 	}
+	createTime, err := p.CreateTimeWithContext(ctx)
+	if err != nil {
+		return Process{}, err
+	}
 
 	metadata := processMetadata(ctx, p)
-	return newProcess(pid, name, memMB, metadata), nil
+	return newProcess(pid, createTime, name, memMB, metadata), nil
 }
 
 type metadata struct {
@@ -89,9 +107,10 @@ func processMetadata(ctx context.Context, p systemProcess) metadata {
 	}
 }
 
-func newProcess(pid int32, name string, memMB uint64, metadata metadata) Process {
+func newProcess(pid int32, createTime int64, name string, memMB uint64, metadata metadata) Process {
 	return Process{
 		PID:         pid,
+		CreateTime:  createTime,
 		ParentPID:   metadata.parentPID,
 		Name:        name,
 		CommandLine: metadata.commandLine,

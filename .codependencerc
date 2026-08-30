@@ -1,0 +1,22 @@
+{
+  "targets": [
+    {
+      "manager": "go",
+      "mode": "precise",
+      "codependencies": [
+        {
+          "github.com/ebitengine/purego": "v0.10.2"
+        }
+      ]
+    },
+    {
+      "manager": "docker",
+      "mode": "verbose",
+      "codependencies": []
+    },
+    {
+      "manager": "github-actions",
+      "mode": "precise"
+    }
+  ]
+}

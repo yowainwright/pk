@@ -25,9 +25,21 @@ body:
       required: true
 
   - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics (if available)
+      description: Run `pk doctor` and paste its complete output.
+      render: text
+      placeholder: |
+        pk doctor
+        version: v1.2.3
+        platform: darwin/arm64
+
+  - type: textarea
     id: environment
     attributes:
       label: Environment
+      description: Include OS, architecture, shell, and Docker version if relevant.
       placeholder: |
         - OS: macOS 15 or Ubuntu 24.04
         - Architecture: arm64 or amd64

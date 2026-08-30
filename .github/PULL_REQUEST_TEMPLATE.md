@@ -36,4 +36,4 @@ Include concise output for CLI presentation changes.
 
 ## Release Notes
 
-Provide one or two changelog-ready bullets, or write `None`.
+Provide one or two release-note bullets, or write `None`.

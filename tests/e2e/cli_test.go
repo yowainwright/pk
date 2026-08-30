@@ -101,7 +101,7 @@ func TestRootHelpIsSafe(t *testing.T) {
 	if result.err != nil {
 		t.Fatalf("root help failed: %v\n%s", result.err, result.stderr)
 	}
-	if !strings.Contains(result.stdout, "Destructive commands require --apply") {
+	if !strings.Contains(result.stdout, "pk tracks local terminal sessions") {
 		t.Fatalf("unexpected root help:\n%s", result.stdout)
 	}
 }
@@ -116,6 +116,17 @@ func TestVersionUsesReleaseMetadata(t *testing.T) {
 	if result.stdout != expected {
 		t.Fatalf("expected %q, got %q", expected, result.stdout)
 	}
+}
+
+func TestDoctorWritesShareableDiagnostics(t *testing.T) {
+	result := runCLI(t, "doctor")
+
+	if result.err != nil {
+		t.Fatalf("doctor failed: %v\n%s", result.err, result.stderr)
+	}
+	assertContains(t, result.stdout, "version: "+e2eVersion)
+	assertContains(t, result.stdout, "platform: "+runtime.GOOS+"/"+runtime.GOARCH)
+	assertContains(t, result.stdout, "privacy: excludes paths")
 }
 
 func TestGlobalColorOptionsPreserveVersionOutput(t *testing.T) {
@@ -157,7 +168,8 @@ func TestCommandHelpRoutes(t *testing.T) {
 		},
 		{args: []string{"monitor", "-h"}, expected: "Usage: pk monitor"},
 		{args: []string{"monitor", "--apply", "--help"}, expected: "Usage: pk monitor"},
-		{args: []string{"skills", "install", "--help"}, expected: "pk skills install"},
+		{args: []string{"obs", "--help"}, expected: "Usage: pk obs"},
+		{args: []string{"doctor", "--help"}, expected: "Usage: pk doctor"},
 	}
 	for _, current := range cases {
 		assertHelpRoute(t, current.args, current.expected)
@@ -212,26 +224,6 @@ func assertServiceFilesAbsent(t *testing.T, home string) {
 	}
 }
 
-func TestSkillInstallWritesBundledSkill(t *testing.T) {
-	skillsRoot := t.TempDir()
-	result := runCLI(t, "skills", "install", "--dir", skillsRoot)
-
-	if result.err != nil {
-		t.Fatalf("skill install failed: %v\n%s", result.err, result.stderr)
-	}
-	installed := filepath.Join(skillsRoot, "pk", "SKILL.md")
-	if result.stdout != installed+"\n" {
-		t.Fatalf("expected installed path %q, got %q", installed, result.stdout)
-	}
-	data, err := os.ReadFile(installed)
-	if err != nil {
-		t.Fatalf("reading installed skill: %v", err)
-	}
-	if !bytes.Contains(data, []byte("name: pk")) {
-		t.Fatalf("unexpected installed skill:\n%s", data)
-	}
-}
-
 func TestBackgroundServiceLifecycle(t *testing.T) {
 	tool, servicePath := serviceFixture(t)
 	home := t.TempDir()
@@ -242,7 +234,9 @@ func TestBackgroundServiceLifecycle(t *testing.T) {
 
 	assertCommandOutput(t, []string{"install", "--apply"}, "installed\n")
 	path := servicePath(home)
-	assertFileContains(t, path, "cleanup", "--apply", "--watch")
+	assertFileContains(t, path, "__daemon")
+	assertFileContains(t, filepath.Join(home, ".config", "pk", "shell", "pk.zsh"), "__session")
+	assertFileContains(t, filepath.Join(home, ".zshrc"), "# pk")
 	assertCommandOutput(t, []string{"status"}, "active\n")
 	assertCommandOutput(t, []string{"uninstall"}, "uninstalled\n")
 	if _, err := os.Stat(path); !os.IsNotExist(err) {

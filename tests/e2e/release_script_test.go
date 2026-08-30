@@ -10,15 +10,15 @@ import (
 	"testing"
 )
 
-func TestReleaseDryRunUsesSvuWithoutDispatching(t *testing.T) {
+func TestReleaseDryRunUsesExplicitVersionWithoutDispatching(t *testing.T) {
 	fakeDir := t.TempDir()
 	logPath := filepath.Join(fakeDir, "gh.log")
 	setupReleaseTools(t, fakeDir)
-	result := runReleaseScript(t, fakeDir, logPath, "1\n")
+	result := runReleaseScript(t, fakeDir, logPath, "", "--dry-run", "v0.1.0-rc.1")
 	if result.err != nil {
 		t.Fatalf("release dry run failed: %v\n%s", result.err, result.stderr)
 	}
-	assertContains(t, result.stdout, "Selected v1.3.0")
+	assertContains(t, result.stdout, "Selected v0.1.0-rc.1")
 	assertContains(t, result.stdout, "no GitHub state changed")
 	logData, err := os.ReadFile(logPath)
 	if err != nil {
@@ -29,16 +29,16 @@ func TestReleaseDryRunUsesSvuWithoutDispatching(t *testing.T) {
 	}
 }
 
-func TestReleaseFailsWhenSvuIsMissing(t *testing.T) {
+func TestReleaseDryRunCanSelectVersion(t *testing.T) {
 	fakeDir := t.TempDir()
-	writeExecutable(t, filepath.Join(fakeDir, "git"), fakeGit)
-	writeExecutable(t, filepath.Join(fakeDir, "gh"), fakeGH)
-	writeExecutable(t, filepath.Join(fakeDir, "mise"), fakeMise)
-	result := runReleaseScript(t, fakeDir, filepath.Join(fakeDir, "gh.log"), "")
-	if result.err == nil {
-		t.Fatal("release unexpectedly succeeded without svu")
+	logPath := filepath.Join(fakeDir, "gh.log")
+	setupReleaseTools(t, fakeDir)
+	result := runReleaseScript(t, fakeDir, logPath, "1\n", "--dry-run")
+	if result.err != nil {
+		t.Fatalf("release dry run failed: %v\n%s", result.err, result.stderr)
 	}
-	assertContains(t, result.stderr, "Required command not found: svu")
+	assertContains(t, result.stdout, "Current: v0.0.0")
+	assertContains(t, result.stdout, "Selected v0.1.0-rc.1")
 }
 
 func setupReleaseTools(t *testing.T, fakeDir string) {
@@ -46,13 +46,19 @@ func setupReleaseTools(t *testing.T, fakeDir string) {
 	writeExecutable(t, filepath.Join(fakeDir, "git"), fakeGit)
 	writeExecutable(t, filepath.Join(fakeDir, "gh"), fakeGH)
 	writeExecutable(t, filepath.Join(fakeDir, "mise"), fakeMise)
-	writeExecutable(t, filepath.Join(fakeDir, "svu"), fakeSvu)
 }
 
-func runReleaseScript(t *testing.T, fakeDir string, logPath string, input string) commandResult {
+func runReleaseScript(
+	t *testing.T,
+	fakeDir string,
+	logPath string,
+	input string,
+	args ...string,
+) commandResult {
 	t.Helper()
 	script := filepath.Join(repositoryRoot, "scripts", "release.sh")
-	command := exec.Command("/bin/bash", script, "--dry-run")
+	commandArgs := append([]string{script}, args...)
+	command := exec.Command("/bin/bash", commandArgs...)
 	command.Dir = repositoryRoot
 	command.Env = []string{"PATH=" + fakeDir, "GH_LOG=" + logPath}
 	command.Stdin = strings.NewReader(input)
@@ -67,6 +73,9 @@ case "$*" in
   "branch --show-current") printf 'main\n' ;;
   "fetch --quiet origin main --tags") ;;
   "rev-parse HEAD"|"rev-parse origin/main") printf 'abc123\n' ;;
+  "tag --list v0.* --sort=-version:refname") ;;
+  "rev-parse -q --verify refs/tags/v0.1.0-rc.1") exit 1 ;;
+  "ls-remote --exit-code --tags origin refs/tags/v0.1.0-rc.1") exit 2 ;;
   *) exit 41 ;;
 esac
 `
@@ -76,22 +85,11 @@ printf '%s\n' "$*" >> "$GH_LOG"
 case "$*" in
   "auth status") ;;
   "repo view --json nameWithOwner --jq .nameWithOwner") printf 'yowainwright/pk\n' ;;
+  "release view v0.1.0-rc.1") exit 1 ;;
   *) exit 42 ;;
 esac
 `
 
 const fakeMise = `#!/bin/sh
 [ "$*" = "run release-preview" ] || exit 43
-`
-
-const fakeSvu = `#!/bin/sh
-case "$*" in
-  current) printf 'v1.2.3' ;;
-  "next --always") printf 'v1.3.0' ;;
-  patch) printf 'v1.2.4' ;;
-  minor) printf 'v1.3.0' ;;
-  major) printf 'v2.0.0' ;;
-  "next --always --prerelease rc.1") printf 'v1.3.0-rc.1' ;;
-  *) exit 44 ;;
-esac
 `

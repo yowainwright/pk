@@ -37,15 +37,6 @@ jobs:
             exit 1
           fi
 
-      - name: Verify draft release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          TAG_NAME: ${{ inputs.tag_name }}
-        run: |
-          is_draft="$(gh release view "$TAG_NAME" --json isDraft --jq .isDraft)"
-          test "$is_draft" = "true"
-
       - name: Verify Homebrew credentials
         if: ${{ !contains(inputs.tag_name, '-') }}
         env:

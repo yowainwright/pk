@@ -1,8 +1,17 @@
 # pk
 
-Safe-by-default local process cleanup CLI for agent and development work.
+<!-- project badges matching GitHub repository, CI workflow, OpenSSF Scorecard, and Codecov upload -->
+
+[![GitHub release](https://img.shields.io/github/v/release/yowainwright/pk?sort=semver)](https://github.com/yowainwright/pk/releases)
+[![CI](https://github.com/yowainwright/pk/actions/workflows/ci.yml/badge.svg)](https://github.com/yowainwright/pk/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/yowainwright/pk/badge)](https://scorecard.dev/viewer/?uri=github.com/yowainwright/pk)
+[![codecov](https://codecov.io/gh/yowainwright/pk/branch/main/graph/badge.svg)](https://codecov.io/gh/yowainwright/pk)
+
+Background process lifecycle cleanup for agent and terminal sessions.
 
 ## Installation
+
+<!-- install commands matching go.mod module path and Homebrew cask release configuration -->
 
 Install the latest release with Homebrew:
 
@@ -16,160 +25,102 @@ Or install with Go 1.26 or newer:
 go install github.com/yowainwright/pk/cmd/pk@latest
 ```
 
-## Usage
+## CLI
 
-<!-- CLI commands implemented by cmd/pk/main.go -->
+`pk` runs as a supervised background daemon. Terminal lifecycle events bind
+processes to the tab/session that started them; the daemon cleans up tracked
+ghost processes when their owner disappears or exceeds the inactive limit.
+The lifecycle store tracks terminal sessions, tabs, windows, agent sessions,
+and user sessions separately.
 
-Scan restartable development processes without killing anything:
+> Run `pk --help` or `pk help <command>` for current command help.
 
-```sh
-pk scan
-```
+<!-- CLI command usage and options implemented by cmd/pk/usage.go, cmd/pk/main.go, and internal/config/config.go -->
 
-Record cleanup targets without killing anything:
-
-```sh
-pk cleanup
-```
-
-Kill high-confidence cleanup targets:
+### Commands
 
 ```sh
-pk cleanup --apply
+Usage:
+  pk <command> [options]
+
+Commands:
+  status               Show daemon status
+  obs                  Show daemon observability
+  history              Show cleanup audit events
+  install --apply      Install the daemon and shell lifecycle plugin
+  uninstall            Remove the daemon and shell lifecycle plugin
+  doctor               Print a shareable diagnostic report
+  version              Print the version
 ```
 
-Run cleanup continuously on the configured interval:
+### Common Flows
 
-```sh
-pk cleanup --apply --watch
-```
-
-Limit cleanup to processes or containers:
-
-```sh
-pk cleanup --scope processes
-pk cleanup --scope containers
-```
-
-Show cleanup audit events:
-
-```sh
-pk history
-```
-
-Install the bundled agent skill:
-
-```sh
-pk skills install
-```
-
-Print where the skill will be installed:
-
-```sh
-pk skills path
-```
-
-Install active background cleanup for the current user:
+Install, check, observe, or remove the daemon:
 
 ```sh
 pk install --apply
-```
-
-Check or remove background cleanup:
-
-```sh
 pk status
+pk obs
 pk uninstall
 ```
 
-Run the existing threshold monitor:
+Inspect history or diagnostics:
 
 ```sh
-pk monitor
+pk history
+pk doctor
 ```
 
-The monitor previews matching processes by default. Apply threshold-based
-termination explicitly:
+### Option Reference
 
-```sh
-pk monitor --apply
-```
+Global options:
 
-Background cleanup uses `launchd` on macOS and `systemd --user` on Linux. It
-runs `pk cleanup --apply --watch` with no external dependencies. Cleanup kills
-target process trees child-first, infers agent/session-owned restartable
-processes, stops matching local Docker Compose/devcontainer containers when
-Docker is available, and writes bounded JSONL audit events. Set `PK_AUDIT_PATH`
-to override the default audit file location. `pk skills install` writes the
-bundled skill to `$PK_SKILLS_DIR`, `$CODEX_HOME/skills`, or `~/.codex/skills`.
+- `--color=auto|always|never` controls terminal color.
 
-Running `pk` without a command prints help. Every destructive mode requires an
-explicit `--apply` flag.
+Daemon options:
 
-Color is automatic on interactive terminals and can be controlled globally:
+- `--interval DURATION` sets the check interval. Default: `3s`.
+- `--stale DURATION` sets inactive agent session age before cleanup. Default:
+  disabled.
+- `--protected NAMES` appends comma-separated process names to the protected
+  set.
 
-```sh
-pk --color=always scan
-pk cleanup --color=never
-```
-
-`--color` accepts `auto`, `always`, or `never`. Rich output is disabled for
-pipes, CI, `TERM=dumb`, and `NO_COLOR`. Data remains plain on stdout; prompts,
-loaders, completion shimmer, and structured status output use stderr. The UI
-layer is implemented with the Go standard library and adds no dependencies.
+`pk install --apply` uses `launchd` on macOS and `systemd --user` on Linux.
+It also installs a zsh plugin that emits session lifecycle events. Cleanup
+writes bounded JSONL audit events; set `PK_AUDIT_PATH` to override the default
+audit file. `doctor` excludes paths, commands, process details, and audit
+contents.
 
 ## Development
 
-<!-- local Go and legibility lint commands derived from go.mod, .mise.toml, .custom-gcl.yml, .golangci.yml, and .github/workflows/ci.yml -->
+<!-- local setup and check commands derived from .mise.toml and scripts/setup.sh -->
 
-This repository pins Go, GoReleaser, and `svu` in `.mise.toml` and the custom
-linter in `.custom-gcl.yml`. Install the mise-managed tools with `mise install`.
-
-Build and test:
+Set up tools and run checks:
 
 ```sh
-mise run build
+mise install
+mise run setup
 mise run check
 ```
 
-Run black-box CLI tests plus isolated process termination in Docker:
-
-```sh
-./tests/e2e/test.sh
-```
-
-Run the same pinned custom lint checks CI runs:
-
-```sh
-mise run lint
-```
-
-`.custom-gcl.yml` configures `golangci-lint custom` to build
-`./bin/legibility-golangci-lint` with
-`github.com/yowainwright/golangci-lint-legibility`. `.golangci.yml` configures
-the rules that binary runs.
-
 ## Release
 
-Start an interactive release from a clean, synchronized `main` branch:
+Select and validate a release candidate from a clean, synchronized `main`
+branch:
 
 ```sh
 mise run release
 ```
 
-`svu` derives the recommended version from conventional commits and supplies
-patch, minor, major, release-candidate, and custom choices. The command runs the
-complete release preview, opens the exact Release Please PR, dispatches and
-waits for its CI, asks before merging, and follows publication to completion.
-Preview without changing GitHub state with
-`bash scripts/release.sh --dry-run`.
-
-Release Please owns the changelog, version commit, tag, and draft release.
-GoReleaser builds four binaries, generates checksums and a Homebrew cask, and
-signs the checksum with keyless cosign. The non-canceling publisher verifies
-the draft, assets, signature, and generated cask before publication. Stable
-releases update `yowainwright/homebrew-tap`; prereleases do not.
-Maintenance commits use `chore:` and remain eligible for patch releases.
+The release script accepts `v0` semantic versions only. It suggests release
+candidates from existing `v0.*` tags, runs the complete local release preview,
+verifies that the version is unused, then asks before tagging, pushing the tag,
+and dispatching the release workflow. Pass a version to skip the selector:
+`mise run release v0.1.0-rc.1`. GoReleaser builds four binaries, generates
+checksums and a Homebrew cask, and signs the checksum with keyless cosign. The
+non-canceling publisher verifies the assets, signature, and generated cask
+before publication. Stable releases update `yowainwright/homebrew-tap`;
+prereleases do not.
 
 ## Contributing and Support
 

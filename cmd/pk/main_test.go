@@ -14,11 +14,32 @@ import (
 
 	"github.com/yowainwright/pk/internal/audit"
 	"github.com/yowainwright/pk/internal/config"
+	"github.com/yowainwright/pk/internal/daemon"
 	"github.com/yowainwright/pk/internal/docker"
+	"github.com/yowainwright/pk/internal/dx"
 	"github.com/yowainwright/pk/internal/killer"
+	"github.com/yowainwright/pk/internal/lifecycle"
 	"github.com/yowainwright/pk/internal/process"
 	"github.com/yowainwright/pk/internal/scan"
 )
+
+func run(args []string, out io.Writer) error {
+	ctx := context.Background()
+	app, commandArgs, err := newApplication(ctx, args, strings.NewReader(""), out, io.Discard)
+	if err != nil {
+		return err
+	}
+	return app.run(commandArgs)
+}
+
+func cleanupConfig(args []string) (*config.Config, cleanupOptions, error) {
+	return cleanupConfigWithOutput(args, io.Discard)
+}
+
+func exitOnError(err error) {
+	ui := dx.New(dx.Config{Err: os.Stderr, Timestamps: true})
+	application{ctx: context.Background(), ui: ui, out: os.Stdout}.exitOnError(err)
+}
 
 func TestRunPrintsVersion(t *testing.T) {
 	var out bytes.Buffer
@@ -87,7 +108,7 @@ func TestRunWithoutArgsWritesHelp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run help: %v", err)
 	}
-	if !strings.Contains(out.String(), "Destructive commands require --apply") {
+	if !strings.Contains(out.String(), "pk tracks local terminal sessions") {
 		t.Fatalf("unexpected help output %q", out.String())
 	}
 	if deps.cfg != nil {
@@ -512,44 +533,199 @@ func TestRunStatusReturnsStatusErrors(t *testing.T) {
 	}
 }
 
-func TestRunSkillsInstallWritesSkill(t *testing.T) {
+func TestRunObsWritesLifecycleState(t *testing.T) {
 	deps := commandDeps(t)
+	setupObsState(deps)
 	var out bytes.Buffer
 
-	err := run([]string{"skills", "install", "-dir", "/tmp/skills"}, &out)
+	err := run([]string{"obs"}, &out)
 	if err != nil {
-		t.Fatalf("run skills install: %v", err)
+		t.Fatalf("run obs: %v", err)
 	}
-	if deps.skills.root != "/tmp/skills" {
-		t.Fatalf("expected skills root, got %q", deps.skills.root)
+	assertMainOutputContains(t, out.String(), "daemon: active")
+	assertMainOutputContains(t, out.String(), "sessions: 1 active, 1 ended")
+	assertMainOutputContains(t, out.String(), "managed processes: 1")
+	assertMainOutputContains(t, out.String(), "lifecycle events: 1")
+	assertMainOutputContains(t, out.String(), "tabs: 1 active, 0 ended")
+	assertMainOutputContains(t, out.String(), "windows: 0 active, 1 ended")
+	assertMainOutputContains(t, out.String(), "last decision: session-ended: ended")
+}
+
+func setupObsState(deps *commandTestDeps) {
+	deps.background.status = "active"
+	deps.lifecycle.state = lifecycle.State{
+		Sessions:     obsSessions(),
+		Tabs:         obsTabs(),
+		Windows:      obsWindows(),
+		Processes:    obsProcesses(),
+		Daemon:       obsDaemonState(),
+		LastDecision: "session-ended: ended",
 	}
-	if out.String() != "/tmp/skills/pk/SKILL.md\n" {
-		t.Fatalf("unexpected output %q", out.String())
+	deps.lifecycle.events = []lifecycle.Event{{EventID: "event"}}
+}
+
+func obsSessions() map[string]lifecycle.TerminalSession {
+	return map[string]lifecycle.TerminalSession{
+		"active": {ID: "active", Exists: true, Active: true},
+		"ended":  {ID: "ended", EndedAt: time.Now()},
 	}
 }
 
-func TestRunSkillsPathPrintsDefaultPath(t *testing.T) {
-	deps := commandDeps(t)
-	deps.skills.defaultRoot = "/tmp/default-skills"
-	var out bytes.Buffer
-
-	err := run([]string{"skills", "path"}, &out)
-	if err != nil {
-		t.Fatalf("run skills path: %v", err)
-	}
-	if out.String() != "/tmp/default-skills/pk/SKILL.md\n" {
-		t.Fatalf("unexpected output %q", out.String())
+func obsProcesses() map[string]lifecycle.ManagedProcess {
+	return map[string]lifecycle.ManagedProcess{
+		"42:123": {Name: "node"},
 	}
 }
 
-func TestRunSkillsRejectsUnknownCommands(t *testing.T) {
+func obsTabs() map[string]lifecycle.Presence {
+	return map[string]lifecycle.Presence{
+		"tab": {ID: "tab", Exists: true, Active: true},
+	}
+}
+
+func obsWindows() map[string]lifecycle.Presence {
+	return map[string]lifecycle.Presence{
+		"window": {ID: "window", EndedAt: time.Now()},
+	}
+}
+
+func obsDaemonState() lifecycle.DaemonState {
+	return lifecycle.DaemonState{
+		LastTickAt: time.Date(2026, 8, 28, 1, 2, 3, 0, time.UTC),
+	}
+}
+
+func TestRunSessionIDWritesID(t *testing.T) {
 	commandDeps(t)
 	var out bytes.Buffer
 
-	err := run([]string{"skills", "missing"}, &out)
+	err := run([]string{"__session-id"}, &out)
+	if err != nil {
+		t.Fatalf("run session id: %v", err)
+	}
+	if len(strings.TrimSpace(out.String())) != 32 {
+		t.Fatalf("expected hex session id, got %q", out.String())
+	}
+}
 
+func TestRunSessionAppendsLifecycleEvent(t *testing.T) {
+	deps := commandDeps(t)
+	var out bytes.Buffer
+
+	err := run(sessionArgs(), &out)
+	if err != nil {
+		t.Fatalf("run session event: %v", err)
+	}
+	event := deps.lifecycle.appended[0]
+	assertSessionEventIdentity(t, event)
+	if event.ShellCreateTime != 1234 {
+		t.Fatalf("expected hydrated shell create time, got %d", event.ShellCreateTime)
+	}
+	assertSessionEventExitCode(t, event)
+}
+
+func TestRunSessionRejectsOutOfRangePID(t *testing.T) {
+	commandDeps(t)
+	var out bytes.Buffer
+	args := sessionArgs()
+	args = append(args, "--process-pid", "2147483648")
+
+	err := run(args, &out)
 	if err == nil {
-		t.Fatal("expected skills command error")
+		t.Fatal("expected pid range error")
+	}
+	if !strings.Contains(err.Error(), "process pid out of range") {
+		t.Fatalf("expected pid range error, got %v", err)
+	}
+}
+
+func assertSessionEventExitCode(t *testing.T, event lifecycle.Event) {
+	t.Helper()
+	missingExitCode := event.ExitCode == nil
+	wrongExitCode := !missingExitCode && *event.ExitCode != 7
+	invalidExitCode := missingExitCode || wrongExitCode
+	if invalidExitCode {
+		t.Fatalf("expected exit code, got %#v", event.ExitCode)
+	}
+}
+
+func assertSessionEventIdentity(t *testing.T, event lifecycle.Event) {
+	t.Helper()
+	wrongTabID := event.TabID != "tab"
+	wrongWindowID := event.WindowID != "window"
+	wrongIdentity := wrongTabID || wrongWindowID
+	if wrongIdentity {
+		t.Fatalf("expected tab/window ids, got %#v", event)
+	}
+}
+
+func sessionArgs() []string {
+	return []string{
+		"__session",
+		"--kind", lifecycle.KindCommandFinish,
+		"--source", "zsh",
+		"--terminal-session-id", "session",
+		"--tab-id", "tab",
+		"--window-id", "window",
+		"--agent-session-id", "agent",
+		"--user-session-id", "user",
+		"--shell-pid", "42",
+		"--exit-code", "7",
+	}
+}
+
+func TestRunDaemonUsesRunner(t *testing.T) {
+	deps := commandDeps(t)
+
+	err := run([]string{"__daemon", "-interval", "1ms"}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("run daemon: %v", err)
+	}
+	if !deps.runner.called {
+		t.Fatal("expected daemon runner")
+	}
+	if deps.cfg.Interval != time.Millisecond {
+		t.Fatalf("expected one millisecond interval, got %s", deps.cfg.Interval)
+	}
+}
+
+func TestRunDoctorWritesShareableDiagnostics(t *testing.T) {
+	deps := commandDeps(t)
+	deps.background.status = "active"
+	deps.docker.available = true
+	deps.audit.events = []audit.Event{{}, {}}
+	var out bytes.Buffer
+
+	err := run([]string{"doctor"}, &out)
+	if err != nil {
+		t.Fatalf("run doctor: %v", err)
+	}
+	assertMainOutputContains(t, out.String(), "version: dev")
+	assertMainOutputContains(t, out.String(), "background service: active")
+	assertMainOutputContains(t, out.String(), "docker CLI: available")
+	assertMainOutputContains(t, out.String(), "audit log: readable (2 events)")
+}
+
+func TestRunDoctorKeepsCheckErrorsPrivate(t *testing.T) {
+	deps := commandDeps(t)
+	deps.background.err = errors.New("private service path")
+	deps.audit.err = errors.New("private audit path")
+	var out bytes.Buffer
+
+	if err := run([]string{"doctor"}, &out); err != nil {
+		t.Fatalf("run doctor: %v", err)
+	}
+	assertMainOutputContains(t, out.String(), "background service: error")
+	assertMainOutputContains(t, out.String(), "audit log: unreadable")
+	if strings.Contains(out.String(), "private") {
+		t.Fatalf("doctor leaked check error: %q", out.String())
+	}
+}
+
+func assertMainOutputContains(t *testing.T, output string, expected string) {
+	t.Helper()
+	if !strings.Contains(output, expected) {
+		t.Fatalf("expected %q in output: %q", expected, output)
 	}
 }
 
@@ -642,8 +818,21 @@ func TestNotifyKilledReturnsNotificationErrors(t *testing.T) {
 }
 
 func TestExitOnErrorIgnoresExpectedErrors(t *testing.T) {
+	oldExitProcess := exitProcess
+	defer func() {
+		exitProcess = oldExitProcess
+	}()
+	exited := false
+	exitProcess = func(int) {
+		exited = true
+	}
+
 	exitOnError(nil)
 	exitOnError(context.Canceled)
+
+	if exited {
+		t.Fatal("expected no exit for expected errors")
+	}
 }
 
 func TestExitOnErrorExitsForUnexpectedErrors(t *testing.T) {
@@ -789,9 +978,9 @@ type fakeCommandKiller struct {
 	pid    int32
 }
 
-func (k *fakeCommandKiller) Kill(ctx context.Context, pid int32) error {
+func (k *fakeCommandKiller) Kill(ctx context.Context, target process.Process) error {
 	k.called = true
-	k.pid = pid
+	k.pid = target.PID
 	return nil
 }
 
@@ -816,10 +1005,12 @@ func (c *fakeDockerClient) Stop(ctx context.Context, id string) error {
 }
 
 type fakeRunner struct {
-	err error
+	err    error
+	called bool
 }
 
 func (r *fakeRunner) Run(ctx context.Context) error {
+	r.called = true
 	return r.err
 }
 
@@ -853,33 +1044,79 @@ func (m *fakeBackgroundManager) Status(context.Context) (string, error) {
 	return m.status, m.err
 }
 
-type fakeSkillInstaller struct {
-	root        string
-	defaultRoot string
-	err         error
+type fakeLifecycleStore struct {
+	events       []lifecycle.Event
+	appended     []lifecycle.Event
+	state        lifecycle.State
+	acknowledged bool
+	err          error
 }
 
-func (i *fakeSkillInstaller) Install(root string) (string, error) {
-	i.root = root
-	return root + "/pk/SKILL.md", i.err
+func newFakeLifecycleStore() *fakeLifecycleStore {
+	state := lifecycle.State{}
+	state.Ensure()
+	return &fakeLifecycleStore{state: state}
 }
 
-func (i *fakeSkillInstaller) DefaultRoot() (string, error) {
-	return i.defaultRoot, i.err
+func (s *fakeLifecycleStore) Append(event lifecycle.Event) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.appended = append(s.appended, event)
+	return nil
+}
+
+func (s *fakeLifecycleStore) Events() ([]lifecycle.Event, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.events, nil
+}
+
+func (s *fakeLifecycleStore) TakeEvents() ([]lifecycle.Event, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.events, nil
+}
+
+func (s *fakeLifecycleStore) AcknowledgeEvents() error {
+	if s.err != nil {
+		return s.err
+	}
+	s.acknowledged = true
+	return nil
+}
+
+func (s *fakeLifecycleStore) LoadState() (lifecycle.State, error) {
+	if s.err != nil {
+		return lifecycle.State{}, s.err
+	}
+	return s.state, nil
+}
+
+func (s *fakeLifecycleStore) SaveState(state lifecycle.State) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.state = state
+	return nil
 }
 
 type commandTestDeps struct {
 	scanner             *fakeScanner
 	audit               *fakeAuditStore
 	auditStoreErr       error
+	lifecycle           *fakeLifecycleStore
+	lifecycleStoreErr   error
 	killer              *fakeCommandKiller
 	docker              *fakeDockerClient
 	runner              *fakeRunner
 	background          *fakeBackgroundManager
 	backgroundErr       error
-	skills              *fakeSkillInstaller
 	cfg                 *config.Config
 	monitorOptions      monitorOptions
+	readCreateTimePID   int32
 	notificationTitle   string
 	notificationMessage string
 }
@@ -889,11 +1126,11 @@ func commandDeps(t *testing.T) *commandTestDeps {
 	deps := &commandTestDeps{}
 	deps.scanner = &fakeScanner{}
 	deps.audit = &fakeAuditStore{}
+	deps.lifecycle = newFakeLifecycleStore()
 	deps.killer = &fakeCommandKiller{}
 	deps.docker = &fakeDockerClient{}
 	deps.runner = &fakeRunner{}
 	deps.background = &fakeBackgroundManager{}
-	deps.skills = &fakeSkillInstaller{defaultRoot: "/tmp/skills"}
 	installCommandDeps(t, deps)
 	return deps
 }
@@ -910,6 +1147,9 @@ func installCommandDeps(t *testing.T, deps *commandTestDeps) {
 	newAuditStore = func() (auditStore, error) {
 		return deps.audit, deps.auditStoreErr
 	}
+	newLifecycleStore = func() (lifecycleStore, error) {
+		return deps.lifecycle, deps.lifecycleStoreErr
+	}
 	newProcessKiller = func() killer.Killer { return deps.killer }
 	newDockerClient = func() docker.Client { return deps.docker }
 	newMonitorRunner = func(
@@ -921,14 +1161,20 @@ func installCommandDeps(t *testing.T, deps *commandTestDeps) {
 		deps.monitorOptions = options
 		return deps.runner
 	}
+	newDaemonRunner = func(
+		cfg *config.Config,
+		store daemon.Store,
+		log daemon.Audit,
+	) daemonRunner {
+		deps.cfg = cfg
+		return deps.runner
+	}
 	newBackgroundManager = func() (backgroundManager, error) {
 		return deps.background, deps.backgroundErr
 	}
-	installSkill = func(root string) (string, error) {
-		return deps.skills.Install(root)
-	}
-	defaultSkillRoot = func() (string, error) {
-		return deps.skills.DefaultRoot()
+	readCreateTime = func(ctx context.Context, pid int32) (int64, error) {
+		deps.readCreateTimePID = pid
+		return 1234, nil
 	}
 	sendNotification = func(title string, message string) error {
 		deps.notificationTitle = title
@@ -942,12 +1188,13 @@ type savedCommandDeps struct {
 	newLister        func() process.Lister
 	newScanner       func(*config.Config, process.Lister) processScanner
 	newAudit         func() (auditStore, error)
+	newLifecycle     func() (lifecycleStore, error)
 	newKiller        func() killer.Killer
 	newDocker        func() docker.Client
 	newRunner        func(*config.Config, monitorOptions, *slog.Logger) monitorRunner
+	newDaemon        func(*config.Config, daemon.Store, daemon.Audit) daemonRunner
 	newBackground    func() (backgroundManager, error)
-	installSkill     func(string) (string, error)
-	defaultSkillRoot func() (string, error)
+	readCreateTime   func(context.Context, int32) (int64, error)
 	send             func(string, string) error
 	handleSignalFunc func(context.CancelFunc) func()
 	notifySignalFunc func(chan<- os.Signal, ...os.Signal)
@@ -961,12 +1208,13 @@ func saveCommandDeps() savedCommandDeps {
 		newLister:        newProcessLister,
 		newScanner:       newProcessScanner,
 		newAudit:         newAuditStore,
+		newLifecycle:     newLifecycleStore,
 		newKiller:        newProcessKiller,
 		newDocker:        newDockerClient,
 		newRunner:        newMonitorRunner,
+		newDaemon:        newDaemonRunner,
 		newBackground:    newBackgroundManager,
-		installSkill:     installSkill,
-		defaultSkillRoot: defaultSkillRoot,
+		readCreateTime:   readCreateTime,
 		send:             sendNotification,
 		handleSignalFunc: handleShutdownSignal,
 		notifySignalFunc: notifySignal,
@@ -980,12 +1228,13 @@ func (d savedCommandDeps) restore() {
 	newProcessLister = d.newLister
 	newProcessScanner = d.newScanner
 	newAuditStore = d.newAudit
+	newLifecycleStore = d.newLifecycle
 	newProcessKiller = d.newKiller
 	newDockerClient = d.newDocker
 	newMonitorRunner = d.newRunner
+	newDaemonRunner = d.newDaemon
 	newBackgroundManager = d.newBackground
-	installSkill = d.installSkill
-	defaultSkillRoot = d.defaultSkillRoot
+	readCreateTime = d.readCreateTime
 	sendNotification = d.send
 	handleShutdownSignal = d.handleSignalFunc
 	notifySignal = d.notifySignalFunc

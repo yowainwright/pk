@@ -139,10 +139,10 @@ type fakeKiller struct {
 	err    error
 }
 
-func (k *fakeKiller) Kill(ctx context.Context, pid int32) error {
+func (k *fakeKiller) Kill(ctx context.Context, target process.Process) error {
 	k.called = true
-	k.pid = pid
-	k.pids = append(k.pids, pid)
+	k.pid = target.PID
+	k.pids = append(k.pids, target.PID)
 	return k.err
 }
 
@@ -171,6 +171,7 @@ func testReport(pid int32, action scan.Action, confidence scan.Confidence) scan.
 func testProcess(pid int32) process.Process {
 	var proc process.Process
 	proc.PID = pid
+	proc.CreateTime = 123
 	proc.Name = "node"
 	return proc
 }

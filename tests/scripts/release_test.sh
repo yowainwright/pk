@@ -13,55 +13,140 @@ test_equal() {
   }
 }
 
-test_candidates_use_svu() (
-  svu() {
+test_version_validation_accepts_v0_prerelease() (
+  release_validate_version "v0.1.0-rc.1"
+)
+
+test_version_validation_rejects_v1() (
+  if release_validate_version "v1.0.0" >/dev/null 2>&1; then
+    return 1
+  fi
+)
+
+test_version_validation_requires_v_prefix() (
+  if release_validate_version "0.1.0" >/dev/null 2>&1; then
+    return 1
+  fi
+)
+
+test_parse_args_accepts_dry_run_and_version() (
+  release_parse_args --dry-run v0.1.0-rc.1
+  test_equal "$PK_RELEASE_DRY_RUN" "true"
+  test_equal "$PK_RELEASE_VERSION" "v0.1.0-rc.1"
+)
+
+test_parse_args_allows_interactive_selection() (
+  release_parse_args --dry-run
+  test_equal "$PK_RELEASE_DRY_RUN" "true"
+  test_equal "$PK_RELEASE_VERSION" ""
+)
+
+test_candidates_default_to_first_rc() (
+  git() {
     case "$*" in
-      current) printf 'v1.2.3' ;;
-      'next --always') printf 'v1.3.0' ;;
-      patch) printf 'v1.2.4' ;;
-      minor) printf 'v1.3.0' ;;
-      major) printf 'v2.0.0' ;;
-      'next --always --prerelease rc.1') printf 'v1.3.0-rc.1' ;;
+      'tag --list v0.* --sort=-version:refname') return 0 ;;
+    esac
+    return 1
+  }
+  release_candidates
+  test_equal "$PK_RELEASE_CURRENT" "v0.0.0"
+  test_equal "$PK_RELEASE_NEXT" "v0.1.0-rc.1"
+  test_equal "$PK_RELEASE_PATCH" "v0.0.1"
+  test_equal "$PK_RELEASE_MINOR_VERSION" "v0.1.0"
+)
+
+test_candidates_promote_current_rc() (
+  git() {
+    case "$*" in
+      'tag --list v0.* --sort=-version:refname') printf 'v0.1.0-rc.1\n' ;;
     esac
   }
   release_candidates
-  test_equal "$PK_RELEASE_CURRENT" "v1.2.3"
-  test_equal "$PK_RELEASE_NEXT" "v1.3.0"
-  test_equal "$PK_RELEASE_PATCH" "v1.2.4"
-  test_equal "$PK_RELEASE_MAJOR" "v2.0.0"
-  test_equal "$PK_RELEASE_RC" "v1.3.0-rc.1"
+  test_equal "$PK_RELEASE_CURRENT" "v0.1.0-rc.1"
+  test_equal "$PK_RELEASE_NEXT" "v0.1.0"
+  test_equal "$PK_RELEASE_RC" "v0.1.0-rc.2"
 )
 
-test_version_validation() (
-  PK_RELEASE_CURRENT="v1.2.3"
-  release_validate_version "v2.0.0-rc.1"
-  if release_validate_version "2.0.0" >/dev/null 2>&1; then
+test_select_version_uses_menu_default() (
+  git() {
+    case "$*" in
+      'tag --list v0.* --sort=-version:refname') return 0 ;;
+    esac
     return 1
-  fi
-  if release_validate_version "v1.2.3" >/dev/null 2>&1; then
-    return 1
-  fi
-)
-
-test_dry_run_does_not_dispatch() (
-  release_preflight() { :; }
-  release_candidates() {
-    PK_RELEASE_CURRENT="v1.0.0"
-    PK_RELEASE_NEXT="v1.1.0"
-    PK_RELEASE_PATCH="v1.0.1"
-    PK_RELEASE_MINOR="v1.1.0"
-    PK_RELEASE_MAJOR="v2.0.0"
-    PK_RELEASE_RC="v1.1.0-rc.1"
   }
-  release_preview() { :; }
-  release_execute() { return 93; }
-  release_main --dry-run <<< "1"
+  PK_RELEASE_VERSION=""
+  release_select_version <<< ""
+  test_equal "$PK_RELEASE_VERSION" "v0.1.0-rc.1"
 )
 
 test_unknown_option_fails() (
   if release_parse_args --publish >/dev/null 2>&1; then
     return 1
   fi
+)
+
+test_available_version_rejects_existing_local_tag() (
+  git() {
+    case "$*" in
+      'rev-parse -q --verify refs/tags/v0.1.0') return 0 ;;
+    esac
+    return 1
+  }
+  gh() { return 1; }
+  PK_RELEASE_VERSION="v0.1.0"
+  if release_require_available_version >/dev/null 2>&1; then
+    return 1
+  fi
+)
+
+test_available_version_rejects_existing_github_release() (
+  git() { return 1; }
+  gh() {
+    case "$*" in
+      'release view v0.1.0') return 0 ;;
+    esac
+    return 1
+  }
+  PK_RELEASE_VERSION="v0.1.0"
+  if release_require_available_version >/dev/null 2>&1; then
+    return 1
+  fi
+)
+
+test_available_version_rejects_remote_lookup_error() (
+  git() {
+    case "$*" in
+      'rev-parse -q --verify refs/tags/v0.1.0') return 1 ;;
+      'ls-remote --exit-code --tags origin refs/tags/v0.1.0') return 128 ;;
+    esac
+    return 1
+  }
+  gh() { return 1; }
+  PK_RELEASE_VERSION="v0.1.0"
+  if release_require_available_version >/dev/null 2>&1; then
+    return 1
+  fi
+)
+
+test_dry_run_does_not_publish() (
+  release_preflight() { :; }
+  release_require_available_version() { :; }
+  release_preview() { :; }
+  release_publish() { return 93; }
+  output="$(release_main --dry-run v0.1.0 2>&1)"
+  grep -Fq 'Dry run complete; no GitHub state changed' <<< "$output"
+)
+
+test_publish_tags_pushes_and_dispatches() (
+  log_path="$(mktemp)"
+  trap 'rm -f -- "$log_path"' EXIT
+  git() { printf 'git %s\n' "$*" >> "$log_path"; }
+  gh() { printf 'gh %s\n' "$*" >> "$log_path"; }
+  PK_RELEASE_VERSION="v0.1.0-rc.1"
+  release_publish
+  grep -Fxq "git tag v0.1.0-rc.1" "$log_path"
+  grep -Fxq "git push origin v0.1.0-rc.1" "$log_path"
+  grep -Fxq "gh workflow run release.yml --ref main --field tag_name=v0.1.0-rc.1" "$log_path"
 )
 
 write_fake_cosign() {
@@ -89,43 +174,6 @@ test_checksum_signature_policy() (
   grep -Fq -- '--certificate-oidc-issuer https://token.actions.githubusercontent.com' "$log_path"
 )
 
-test_release_pr_dispatches_ci() (
-  log_path="$(mktemp)"
-  trap 'rm -f -- "$log_path"' EXIT
-  gh() {
-    printf '%s\n' "$*" >> "$log_path"
-    case "$*" in
-      'pr view '*) printf 'CLEAN\n' ;;
-    esac
-  }
-  release_latest_run() { printf '10'; }
-  release_wait_for_run() { printf '11'; }
-  release_watch_run() { :; }
-  release_check_pr 42 release-please--branches--main
-  expected='workflow run ci.yml --ref release-please--branches--main'
-  grep -Fxq "$expected" "$log_path"
-)
-
-test_execute_aborts_without_release_pr() (
-  release_dispatch_pr() { :; }
-  release_require_pr() { release_fail "Timed out waiting for the release pull request"; }
-  release_check_pr() { return 94; }
-  if release_execute 10 >/dev/null 2>&1; then
-    return 1
-  fi
-)
-
-test_missing_release_pr_uses_config_neutral_error() (
-  PK_RELEASE_VERSION="v1.2.4"
-  release_find_pr() { :; }
-  sleep() { :; }
-  output="$(release_require_pr 2>&1 || true)"
-  grep -Fq 'release-please found no changelog entries since the last tag' <<< "$output"
-  if grep -Eq 'feat:|fix:|chore:' <<< "$output"; then
-    return 1
-  fi
-)
-
 run_test() {
   local name="$1"
   if "$name"; then
@@ -138,14 +186,21 @@ run_test() {
 
 failures=0
 for test_name in \
-  test_candidates_use_svu \
-  test_version_validation \
-  test_dry_run_does_not_dispatch \
+  test_version_validation_accepts_v0_prerelease \
+  test_version_validation_rejects_v1 \
+  test_version_validation_requires_v_prefix \
+  test_parse_args_accepts_dry_run_and_version \
+  test_parse_args_allows_interactive_selection \
+  test_candidates_default_to_first_rc \
+  test_candidates_promote_current_rc \
+  test_select_version_uses_menu_default \
   test_unknown_option_fails \
-  test_checksum_signature_policy \
-  test_release_pr_dispatches_ci \
-  test_execute_aborts_without_release_pr \
-  test_missing_release_pr_uses_config_neutral_error; do
+  test_available_version_rejects_existing_local_tag \
+  test_available_version_rejects_existing_github_release \
+  test_available_version_rejects_remote_lookup_error \
+  test_dry_run_does_not_publish \
+  test_publish_tags_pushes_and_dispatches \
+  test_checksum_signature_policy; do
   run_test "$test_name" || ((failures += 1))
 done
 

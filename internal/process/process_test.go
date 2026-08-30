@@ -17,14 +17,9 @@ func TestNewProcessMapsMetadata(t *testing.T) {
 		cpuPercent:  42,
 	}
 
-	proc := newProcess(9, "node", 128, data)
+	proc := newProcess(9, 123, "node", 128, data)
 
-	if proc.PID != 9 {
-		t.Fatalf("expected pid 9, got %d", proc.PID)
-	}
-	if proc.ParentPID != 7 {
-		t.Fatalf("expected parent pid 7, got %d", proc.ParentPID)
-	}
+	assertProcessIdentity(t, proc)
 	assertProcessMetadata(t, proc)
 }
 
@@ -45,6 +40,19 @@ func TestGetProcessInfoReadsCurrentProcess(t *testing.T) {
 	}
 	if info.PID != int32(os.Getpid()) {
 		t.Fatalf("expected current pid, got %d", info.PID)
+	}
+	if info.CreateTime == 0 {
+		t.Fatal("expected current process create time")
+	}
+}
+
+func TestCreateTimeReadsCurrentProcess(t *testing.T) {
+	createTime, err := CreateTime(context.Background(), int32(os.Getpid()))
+	if err != nil {
+		t.Fatalf("create time: %v", err)
+	}
+	if createTime == 0 {
+		t.Fatal("expected create time")
 	}
 }
 
@@ -67,6 +75,17 @@ func TestGetProcessInfoReturnsMemoryErrors(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected memory error")
+	}
+}
+
+func TestGetProcessInfoReturnsCreateTimeErrors(t *testing.T) {
+	proc := testSystemProcess()
+	proc.createTimeErr = errors.New("create time denied")
+
+	_, err := getProcessInfo(context.Background(), 42, proc)
+
+	if err == nil {
+		t.Fatal("expected create time error")
 	}
 }
 
@@ -112,22 +131,28 @@ func TestGopsutilListerReturnsListErrors(t *testing.T) {
 }
 
 type fakeSystemProcess struct {
-	name       string
-	rss        uint64
-	ppid       int32
-	cmdline    string
-	cwd        string
-	cpu        float64
-	nameErr    error
-	memoryErr  error
-	ppidErr    error
-	cmdlineErr error
-	cwdErr     error
-	cpuErr     error
+	name          string
+	createTime    int64
+	rss           uint64
+	ppid          int32
+	cmdline       string
+	cwd           string
+	cpu           float64
+	nameErr       error
+	createTimeErr error
+	memoryErr     error
+	ppidErr       error
+	cmdlineErr    error
+	cwdErr        error
+	cpuErr        error
 }
 
 func (p *fakeSystemProcess) NameWithContext(ctx context.Context) (string, error) {
 	return p.name, p.nameErr
+}
+
+func (p *fakeSystemProcess) CreateTimeWithContext(ctx context.Context) (int64, error) {
+	return p.createTime, p.createTimeErr
 }
 
 func (p *fakeSystemProcess) MemoryInfoWithContext(
@@ -157,12 +182,13 @@ func (p *fakeSystemProcess) CPUPercentWithContext(ctx context.Context) (float64,
 
 func testSystemProcess() *fakeSystemProcess {
 	return &fakeSystemProcess{
-		name:    "node",
-		rss:     128 * bytesPerMegabyte,
-		ppid:    7,
-		cmdline: "node server.js",
-		cwd:     "/Users/jeff/code/app",
-		cpu:     42,
+		name:       "node",
+		createTime: 123,
+		rss:        128 * bytesPerMegabyte,
+		ppid:       7,
+		cmdline:    "node server.js",
+		cwd:        "/Users/jeff/code/app",
+		cpu:        42,
 	}
 }
 
@@ -195,6 +221,19 @@ func assertProcessMetadata(t *testing.T, proc Process) {
 	}
 	if proc.MemoryMB != 128 {
 		t.Fatalf("expected memory mb, got %d", proc.MemoryMB)
+	}
+}
+
+func assertProcessIdentity(t *testing.T, proc Process) {
+	t.Helper()
+	if proc.PID != 9 {
+		t.Fatalf("expected pid 9, got %d", proc.PID)
+	}
+	if proc.ParentPID != 7 {
+		t.Fatalf("expected parent pid 7, got %d", proc.ParentPID)
+	}
+	if proc.CreateTime != 123 {
+		t.Fatalf("expected create time 123, got %d", proc.CreateTime)
 	}
 }
 

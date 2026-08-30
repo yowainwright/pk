@@ -1,70 +1,15 @@
 package workflow_test
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-type releaseConfig struct {
-	Packages map[string]packageConfig `json:"packages"`
-}
-
-type packageConfig struct {
-	ChangelogSections []changelogSection `json:"changelog-sections"`
-	Draft             bool               `json:"draft"`
-	ForceTagCreation  bool               `json:"force-tag-creation"`
-}
-
-type changelogSection struct {
-	Type   string `json:"type"`
-	Hidden bool   `json:"hidden"`
-}
-
-func TestReleasePleaseCreatesTaggedDrafts(t *testing.T) {
-	var config releaseConfig
-	data := readRepoFile(t, "release-please-config.json")
-	if err := json.Unmarshal([]byte(data), &config); err != nil {
-		t.Fatalf("parse release config: %v", err)
-	}
-	root := config.Packages["."]
-	if !root.Draft {
-		t.Fatalf("expected draft configuration, got %#v", root)
-	}
-	if !root.ForceTagCreation {
-		t.Fatalf("expected tagged draft configuration, got %#v", root)
-	}
-}
-
-func TestReleasePleaseIncludesMaintenanceCommits(t *testing.T) {
-	var config releaseConfig
-	data := readRepoFile(t, "release-please-config.json")
-	if err := json.Unmarshal([]byte(data), &config); err != nil {
-		t.Fatalf("parse release config: %v", err)
-	}
-	for _, section := range config.Packages["."].ChangelogSections {
-		isVisibleChore := section.Type == "chore" && !section.Hidden
-		if isVisibleChore {
-			return
-		}
-	}
-	t.Fatal("expected visible chore changelog section")
-}
-
-func TestReleasePleaseDispatchesPublisher(t *testing.T) {
-	workflow := readRepoFile(t, ".github/workflows/release-please.yml")
-	assertContains(t, workflow, "gh workflow run release.yml")
-	assertContains(t, workflow, "release-as: ${{ inputs.release_as }}")
-	assertContains(t, workflow, "needs: release-please")
-	assertContains(t, workflow, "cancel-in-progress: false")
-	assertMissing(t, workflow, "uses: ./.github/workflows/release.yml")
-}
-
-func TestGoReleaserTargetsExistingDraft(t *testing.T) {
+func TestGoReleaserCreatesDraft(t *testing.T) {
 	config := readRepoFile(t, ".goreleaser.yaml")
-	assertContains(t, config, "use_existing_draft: true")
+	assertContains(t, config, "draft: true")
 	assertContains(t, config, "mode: keep-existing")
 	assertContains(t, config, "artifacts: checksum")
 	assertContains(t, config, "homebrew_casks:")
@@ -102,15 +47,52 @@ func TestCIExercisesReleaseAndSecurityPaths(t *testing.T) {
 	workflow := readRepoFile(t, ".github/workflows/ci.yml")
 	script := readRepoFile(t, "scripts/release.sh")
 	security := readRepoFile(t, "scripts/security.sh")
+	assertCIWorkflowPaths(t, workflow)
+	assertReleaseScriptPaths(t, script)
+	assertSecurityToolVersions(t, security)
+}
+
+func assertCIWorkflowPaths(t *testing.T, workflow string) {
+	t.Helper()
 	assertContains(t, workflow, "workflow_dispatch:")
 	assertContains(t, workflow, "go test -tags=e2e")
 	assertContains(t, workflow, "sh scripts/lint.sh")
+	assertContains(t, workflow, "shellcheck-legibility-0.2.1.tar.gz")
+	assertContains(t, workflow, "137942db1000e72ce8f8e2fbe8c10e334c70dc554ad2ef08aa49f0778f0302c0")
+	assertMissing(t, workflow, "lint-shell")
 	assertContains(t, workflow, "sh scripts/security.sh")
-	assertContains(t, security, "v1.2.0")
-	assertContains(t, security, "v2.25.0")
+	assertContains(t, workflow, "bash tests/scripts/setup_test.sh")
 	assertContains(t, workflow, "release --snapshot --clean --skip=sign")
 	assertContains(t, workflow, "codecov/codecov-action@")
-	assertContains(t, script, `gh workflow run "$PK_CI_WORKFLOW" --ref "$head_ref"`)
+}
+
+func assertReleaseScriptPaths(t *testing.T, script string) {
+	t.Helper()
+	assertContains(t, script, `release_validate_version "$PK_RELEASE_VERSION"`)
+	assertContains(t, script, `Version must be v-prefixed v0 SemVer`)
+	assertContains(t, script, `release_require_available_version`)
+	assertContains(t, script, `git ls-remote --exit-code --tags origin`)
+	assertContains(t, script, `mise run release-preview`)
+	assertContains(t, script, `release_select_version`)
+	assertContains(t, script, `git tag "$PK_RELEASE_VERSION"`)
+	assertContains(t, script, `git push origin "$PK_RELEASE_VERSION"`)
+	assertContains(t, script, `gh workflow run "$PK_PUBLISH_WORKFLOW" --ref main`)
+	assertMissing(t, script, "release"+"-please")
+}
+
+func assertSecurityToolVersions(t *testing.T, security string) {
+	t.Helper()
+	assertContains(t, security, "v1.2.0")
+	assertContains(t, security, "v2.25.0")
+}
+
+func TestBugReportSupportsPreDoctorReleases(t *testing.T) {
+	template := readRepoFile(t, ".github/ISSUE_TEMPLATE/bug_report.yml")
+	assertContains(t, template, "id: version")
+	assertContains(t, template, "Run `pk --version`.")
+	assertContains(t, template, "Diagnostics (if available)")
+	assertContains(t, template, "id: environment")
+	assertContains(t, template, "Architecture: arm64 or amd64")
 }
 
 func TestCaskVerificationIsShared(t *testing.T) {

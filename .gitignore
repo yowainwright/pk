@@ -32,6 +32,7 @@ go.work.sum
 # .vscode/
 tmp/
 CLAUDE.md
+.codex/
 
 # Built binary
 /pk

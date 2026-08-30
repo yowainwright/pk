@@ -21,8 +21,9 @@ func TestInstallLaunchdWritesPlistAndStartsService(t *testing.T) {
 	assertContains(t, data, launchdLabel)
 	assertContains(t, data, "com.yowainwright.pk")
 	assertContains(t, data, "/bin/pk")
-	assertContains(t, data, "--watch")
+	assertContains(t, data, "__daemon")
 	assertServiceMode(t, manager)
+	assertShellPluginInstalled(t, manager)
 	assertCommands(t, runner, "launchctl bootout")
 	assertCommands(t, runner, "launchctl bootstrap")
 	assertCommands(t, runner, "launchctl kickstart")
@@ -47,10 +48,48 @@ func TestInstallSystemdWritesUnitAndStartsService(t *testing.T) {
 	}
 
 	data := readServiceFile(t, manager)
-	assertContains(t, data, `ExecStart="/bin/pk" "cleanup" "--apply" "--watch"`)
+	assertContains(t, data, `ExecStart="/bin/pk" "__daemon"`)
 	assertServiceMode(t, manager)
+	assertShellPluginInstalled(t, manager)
 	assertCommands(t, runner, "systemctl --user daemon-reload")
 	assertCommands(t, runner, "systemctl --user enable --now pk.service")
+}
+
+func TestInstallSystemdRollsBackWhenShellInstallFails(t *testing.T) {
+	runner := &fakeRunner{}
+	manager := testManager(t, "linux", runner)
+	manager.zdotdir = filepath.Join(manager.home, "blocked")
+	if err := os.WriteFile(manager.zdotdir, []byte("file"), 0o600); err != nil {
+		t.Fatalf("writing blocked zdotdir: %v", err)
+	}
+
+	if err := manager.Install(context.Background()); err == nil {
+		t.Fatal("expected shell install error")
+	}
+
+	assertMissingServiceFile(t, manager)
+	assertShellPluginFileMissing(t, manager)
+	assertCommands(t, runner, "systemctl --user disable --now pk.service")
+	assertCommandCount(t, runner, "systemctl --user daemon-reload", 2)
+}
+
+func TestInstallSystemdRollsBackShellFailureAfterContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	runner := &fakeRunner{cancelAfter: 2, cancel: cancel}
+	manager := testManager(t, "linux", runner)
+	manager.zdotdir = filepath.Join(manager.home, "blocked")
+	if err := os.WriteFile(manager.zdotdir, []byte("file"), 0o600); err != nil {
+		t.Fatalf("writing blocked zdotdir: %v", err)
+	}
+
+	if err := manager.Install(ctx); err == nil {
+		t.Fatal("expected shell install error")
+	}
+
+	assertMissingServiceFile(t, manager)
+	assertShellPluginFileMissing(t, manager)
+	assertCommands(t, runner, "systemctl --user disable --now pk.service")
+	assertCommandCount(t, runner, "systemctl --user daemon-reload", 2)
 }
 
 func assertServiceMode(t *testing.T, manager *Manager) {
@@ -106,6 +145,7 @@ func TestUninstallLaunchdRemovesPlist(t *testing.T) {
 	}
 
 	assertMissingServiceFile(t, manager)
+	assertShellPluginRemoved(t, manager)
 	assertCommands(t, runner, "launchctl bootout")
 }
 
@@ -121,6 +161,41 @@ func TestUninstallSystemdRemovesUnit(t *testing.T) {
 	}
 
 	assertMissingServiceFile(t, manager)
+	assertShellPluginRemoved(t, manager)
+}
+
+func assertShellPluginInstalled(t *testing.T, manager *Manager) {
+	t.Helper()
+	installer := manager.shellInstaller()
+	assertContains(t, readPath(t, installer.PluginPath()), "__session")
+	assertContains(t, readPath(t, installer.ZshrcPath()), installer.SourceLine())
+}
+
+func assertShellPluginRemoved(t *testing.T, manager *Manager) {
+	t.Helper()
+	installer := manager.shellInstaller()
+	assertShellPluginFileMissing(t, manager)
+	data := readPath(t, installer.ZshrcPath())
+	if strings.Contains(data, installer.SourceLine()) {
+		t.Fatalf("expected source line removed:\n%s", data)
+	}
+}
+
+func assertShellPluginFileMissing(t *testing.T, manager *Manager) {
+	t.Helper()
+	installer := manager.shellInstaller()
+	if _, err := os.Stat(installer.PluginPath()); !os.IsNotExist(err) {
+		t.Fatalf("expected removed shell plugin, got %v", err)
+	}
+}
+
+func readPath(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	return string(data)
 }
 
 func TestCanceledSystemdUninstallFinishesReload(t *testing.T) {
@@ -259,13 +334,14 @@ func TestCommandRunnerStopsCanceledCommands(t *testing.T) {
 }
 
 type fakeRunner struct {
-	commands []string
-	output   []byte
-	err      error
-	cancelAt int
-	cancel   context.CancelFunc
-	failAt   int
-	failErr  error
+	commands    []string
+	output      []byte
+	err         error
+	cancelAt    int
+	cancelAfter int
+	cancel      context.CancelFunc
+	failAt      int
+	failErr     error
 }
 
 func (r *fakeRunner) Run(ctx context.Context, name string, args ...string) error {
@@ -273,6 +349,9 @@ func (r *fakeRunner) Run(ctx context.Context, name string, args ...string) error
 	if len(r.commands) == r.cancelAt {
 		r.cancel()
 		return context.Canceled
+	}
+	if len(r.commands) == r.cancelAfter {
+		r.cancel()
 	}
 	if len(r.commands) == r.failAt {
 		return r.failErr

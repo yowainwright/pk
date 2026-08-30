@@ -1,0 +1,18 @@
+#!/usr/bin/env sh
+# Managed by pk scripts/setup.sh
+set -eu
+
+require_mise() {
+  command -v mise >/dev/null 2>&1 && return
+  printf '%s\n' "mise is required to run the pk pre-commit hook" >&2
+  exit 1
+}
+
+main() {
+  repository_root="$(git rev-parse --show-toplevel)"
+  cd "$repository_root"
+  require_mise
+  exec mise run hook-pre-commit
+}
+
+main "$@"

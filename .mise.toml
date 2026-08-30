@@ -1,7 +1,6 @@
 [tools]
 go = "1.26.5"
 goreleaser = "2.17.0"
-svu = "3.4.1"
 
 [env]
 GOFLAGS = "-mod=readonly"
@@ -24,9 +23,37 @@ test -z "$files" || {
 }
 '''
 
+[tasks.setup]
+description = "Install repository Git hooks"
+run = "sh scripts/setup.sh"
+
+[tasks.hook-pre-commit]
+description = "Run fast commit checks"
+run = '''
+mise run fmt-check
+mise run lint
+go test ./...
+'''
+
 [tasks.lint]
-description = "Run Go vet and the custom linter"
+description = "Run shell, Go vet, and custom lint checks"
 run = "sh scripts/lint.sh"
+
+[tasks.lint-agent]
+description = "Run strict changed-file lint for agent edits"
+run = "sh scripts/lint.sh --agent"
+
+[tasks.lint-all]
+description = "Run lint checks with all-file legibility reporting"
+run = "sh scripts/lint.sh --all"
+
+[tasks.lint-agent-all]
+description = "Run strict lint for every Go package"
+run = "sh scripts/lint.sh --agent --all"
+
+[tasks.lint-legibility-setup]
+description = "Build the custom Go legibility linter"
+run = "sh scripts/lint.sh --setup-only"
 
 [tasks.test]
 description = "Run race-enabled tests"
@@ -41,8 +68,11 @@ description = "Run isolated process cleanup tests"
 run = "./tests/e2e/test-process-cleanup.sh"
 
 [tasks.test-scripts]
-description = "Run release script tests"
-run = "bash tests/scripts/release_test.sh"
+description = "Run shell script tests"
+run = '''
+bash tests/scripts/release_test.sh
+bash tests/scripts/setup_test.sh
+'''
 
 [tasks.security]
 description = "Run vulnerability and source security scans"
@@ -89,5 +119,5 @@ fi
 '''
 
 [tasks.release]
-description = "Prepare, validate, and publish a prompted release"
+description = "Select, validate, and dispatch a v0 release"
 run = "bash scripts/release.sh"

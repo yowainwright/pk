@@ -8,27 +8,24 @@ import (
 	"github.com/yowainwright/pk/internal/dx"
 )
 
-const rootUsage = `pk safely previews local process cleanup by default.
+const rootUsage = `pk tracks local terminal sessions and cleans up ghost processes.
 
 Usage:
   pk <command> [options]
 
 Commands:
-  scan                 Preview matching processes
-  cleanup              Record cleanup targets without applying actions
-  monitor              Watch process thresholds without applying actions
+  status               Show daemon status
+  obs                  Show daemon observability
   history              Show cleanup audit events
-  install --apply      Install active background cleanup
-  status               Show background cleanup status
-  uninstall            Remove background cleanup
-  skills install       Install the bundled Codex skill
-  skills path          Print the skill installation path
+  install --apply      Install the daemon and shell lifecycle plugin
+  uninstall            Remove the daemon and shell lifecycle plugin
+  doctor               Print a shareable diagnostic report
   version              Print the version
 
 Global options:
   --color MODE         Set color to auto, always, or never
 
-Destructive commands require --apply. Run "pk help <command>" for details.
+Run "pk help <command>" for details.
 `
 
 const scanUsage = `Usage: pk scan [--cpu PERCENT] [--mem MB] [--protected NAMES]
@@ -49,15 +46,17 @@ Watches CPU and memory thresholds in preview mode. --apply terminates an
 unprotected process after it exceeds a threshold for the grace period.
 `
 
-const installUsage = `Usage: pk install --apply
+const obsUsage = `Usage: pk obs
 
-Installs continuous active cleanup for the current user. The explicit --apply
-flag is required because the service terminates processes and containers.
+Shows daemon status, session/tab/window/agent/user counts, managed process
+counts, lifecycle event count, and the last daemon decision.
 `
 
-const skillsUsage = `Usage:
-  pk skills install [--dir PATH]
-  pk skills path
+const installUsage = `Usage: pk install --apply
+
+Installs the supervised daemon and zsh lifecycle plugin for the current user.
+The explicit --apply flag is required because the daemon can terminate
+processes after session lifecycle signals.
 `
 
 func runInformational(args []string, ui *dx.UI) (bool, error) {
@@ -165,6 +164,8 @@ func primaryUsage(topic string) (string, bool) {
 		return cleanupUsage, true
 	case "monitor":
 		return monitorUsage, true
+	case "obs":
+		return obsUsage, true
 	default:
 		return "", false
 	}
@@ -174,12 +175,12 @@ func utilityUsage(topic string) (string, bool) {
 	switch topic {
 	case "install":
 		return installUsage, true
-	case "skills", "skills install", "skills path":
-		return skillsUsage, true
 	case "history":
 		return "Usage: pk history\n", true
 	case "status":
 		return "Usage: pk status\n", true
+	case "doctor":
+		return "Usage: pk doctor\n", true
 	case "uninstall":
 		return "Usage: pk uninstall\n", true
 	case "version":
