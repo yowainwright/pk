@@ -67,17 +67,19 @@ func (m *Manager) Install(ctx context.Context) error {
 		return err
 	}
 	if err := m.shellInstaller().Install(); err != nil {
-		return m.rollbackServiceAfterShellInstall(ctx, err)
+		return m.rollbackServiceAfterShellInstall(err)
 	}
 	return nil
 }
 
-func (m *Manager) rollbackServiceAfterShellInstall(ctx context.Context, cause error) error {
-	if err := ctx.Err(); err != nil {
-		return lifecycleError(cause, "rolling back service install", err)
+func (m *Manager) rollbackServiceAfterShellInstall(cause error) error {
+	if m.goos == "darwin" {
+		return m.rollbackLaunchdInstall(cause)
 	}
-	recovery := m.uninstallService(ctx)
-	return lifecycleError(cause, "rolling back service install", recovery)
+	if m.goos == "linux" {
+		return m.rollbackSystemdInstall(cause)
+	}
+	return lifecycleError(cause, "rolling back service install", unsupported(m.goos))
 }
 
 func (m *Manager) installService(ctx context.Context) error {

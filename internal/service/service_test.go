@@ -73,6 +73,25 @@ func TestInstallSystemdRollsBackWhenShellInstallFails(t *testing.T) {
 	assertCommandCount(t, runner, "systemctl --user daemon-reload", 2)
 }
 
+func TestInstallSystemdRollsBackShellFailureAfterContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	runner := &fakeRunner{cancelAfter: 2, cancel: cancel}
+	manager := testManager(t, "linux", runner)
+	manager.zdotdir = filepath.Join(manager.home, "blocked")
+	if err := os.WriteFile(manager.zdotdir, []byte("file"), 0o600); err != nil {
+		t.Fatalf("writing blocked zdotdir: %v", err)
+	}
+
+	if err := manager.Install(ctx); err == nil {
+		t.Fatal("expected shell install error")
+	}
+
+	assertMissingServiceFile(t, manager)
+	assertShellPluginFileMissing(t, manager)
+	assertCommands(t, runner, "systemctl --user disable --now pk.service")
+	assertCommandCount(t, runner, "systemctl --user daemon-reload", 2)
+}
+
 func assertServiceMode(t *testing.T, manager *Manager) {
 	t.Helper()
 	info, err := os.Stat(manager.servicePath())
@@ -315,13 +334,14 @@ func TestCommandRunnerStopsCanceledCommands(t *testing.T) {
 }
 
 type fakeRunner struct {
-	commands []string
-	output   []byte
-	err      error
-	cancelAt int
-	cancel   context.CancelFunc
-	failAt   int
-	failErr  error
+	commands    []string
+	output      []byte
+	err         error
+	cancelAt    int
+	cancelAfter int
+	cancel      context.CancelFunc
+	failAt      int
+	failErr     error
 }
 
 func (r *fakeRunner) Run(ctx context.Context, name string, args ...string) error {
@@ -329,6 +349,9 @@ func (r *fakeRunner) Run(ctx context.Context, name string, args ...string) error
 	if len(r.commands) == r.cancelAt {
 		r.cancel()
 		return context.Canceled
+	}
+	if len(r.commands) == r.cancelAfter {
+		r.cancel()
 	}
 	if len(r.commands) == r.failAt {
 		return r.failErr
