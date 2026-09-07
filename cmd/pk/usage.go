@@ -14,6 +14,9 @@ Usage:
   pk <command> [options]
 
 Commands:
+  scan                 Preview matching processes
+  cleanup              Preview process and container cleanup
+  monitor              Preview CPU and memory threshold monitoring
   status               Show daemon status
   obs                  Show daemon observability
   history              Show cleanup audit events

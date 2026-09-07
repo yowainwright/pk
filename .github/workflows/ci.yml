@@ -35,10 +35,10 @@ jobs:
             exit 1
           fi
 
-      - name: Install shell linters
+      - name: Install shell tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y shellcheck
+          sudo apt-get install -y shellcheck zsh
           curl -fsSLo shellcheck-legibility.tar.gz \
             https://github.com/yowainwright/shellcheck_legibility/releases/download/v0.2.1/shellcheck-legibility-0.2.1.tar.gz
           echo "137942db1000e72ce8f8e2fbe8c10e334c70dc554ad2ef08aa49f0778f0302c0  shellcheck-legibility.tar.gz" | sha256sum -c -
@@ -62,6 +62,7 @@ jobs:
         run: |
           bash tests/scripts/release_test.sh
           bash tests/scripts/setup_test.sh
+          bash tests/scripts/lint_test.sh
 
       - name: Upload coverage
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f

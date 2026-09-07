@@ -2,7 +2,10 @@ package process
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"syscall"
 
 	"github.com/shirou/gopsutil/v4/process"
 )
@@ -52,6 +55,16 @@ func CreateTime(ctx context.Context, pid int32) (int64, error) {
 		return 0, fmt.Errorf("reading process %d create time: %w", pid, err)
 	}
 	return createTime, nil
+}
+
+func IsGone(err error) bool {
+	if errors.Is(err, process.ErrorProcessNotRunning) {
+		return true
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	return errors.Is(err, syscall.ESRCH)
 }
 
 func (l *GopsutilLister) List(ctx context.Context) ([]Process, error) {

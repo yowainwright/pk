@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,6 +61,106 @@ func TestTickSkipsReusedPIDs(t *testing.T) {
 	}
 	if len(store.state.Processes) != 0 {
 		t.Fatalf("expected stale managed process to be removed")
+	}
+}
+
+func TestTickKeepsChildWhenLiveShellIsMissingFromSnapshot(t *testing.T) {
+	store := newFakeStore(sessionStartEvent())
+	store.state.Processes[childProcessKey()] = managedChild()
+	store.procs = []process.Process{childProcess()}
+	killer := &fakeKiller{}
+	runner := testRunner(store, killer)
+	if err := runner.Tick(t.Context()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	assertSessionSurvives(t, store, killer)
+}
+
+func TestTickDefersCleanupWhenShellIdentityCannotBeRead(t *testing.T) {
+	store := newFakeStore(sessionStartEvent())
+	store.state.Processes[childProcessKey()] = managedChild()
+	store.procs = []process.Process{childProcess()}
+	store.shellErr = os.ErrPermission
+	killer := &fakeKiller{}
+	runner := testRunner(store, killer)
+	err := runner.Tick(t.Context())
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected permission error without a kill, got %v", err)
+	}
+	assertSessionSurvives(t, store, killer)
+	if store.state.LastError == "" {
+		t.Fatal("expected the error to be saved without ending the session")
+	}
+}
+
+func assertSessionSurvives(t *testing.T, store *fakeStore, killer *fakeKiller) {
+	t.Helper()
+	if killer.called {
+		t.Fatal(
+			"a shell missing from the snapshot must not trigger cleanup without confirming its exit",
+		)
+	}
+	session := store.state.Sessions["session-1"]
+	if !session.Exists {
+		t.Fatal("expected the session to remain live")
+	}
+}
+
+func TestTickCleansUpWhenShellExitIsConfirmed(t *testing.T) {
+	store := newFakeStore(sessionStartEvent())
+	store.state.Processes[childProcessKey()] = managedChild()
+	store.procs = []process.Process{childProcess()}
+	store.shellErr = os.ErrNotExist
+	assertMissingShellCleanup(t, store)
+}
+
+func TestTickCleansUpWhenShellPIDWasReused(t *testing.T) {
+	store := newFakeStore(sessionStartEvent())
+	store.state.Processes[childProcessKey()] = managedChild()
+	store.procs = []process.Process{childProcess()}
+	store.shellCreateTime++
+	assertMissingShellCleanup(t, store)
+}
+
+func TestTickSurfacesCleanupAuditErrors(t *testing.T) {
+	for _, protected := range []bool{false, true} {
+		t.Run(fmt.Sprint("protected=", protected), func(t *testing.T) {
+			store := newFakeStore(sessionStartEvent(), sessionStopEvent())
+			store.state.Processes[childProcessKey()] = managedChild()
+			store.procs = []process.Process{childProcess()}
+			store.auditErr = errors.New("audit disk full")
+			killer := &fakeKiller{}
+			runner := testRunner(store, killer)
+			if protected {
+				runner.cfg.Protected = append(runner.cfg.Protected, childProcess().Name)
+			}
+			assertAuditFailureVisible(t, runner, store)
+			if killer.called == protected {
+				t.Fatal("audit failure must preserve process protection")
+			}
+		})
+	}
+}
+
+func assertAuditFailureVisible(t *testing.T, runner *Runner, store *fakeStore) {
+	t.Helper()
+	if err := runner.Tick(t.Context()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if !strings.Contains(store.state.LastError, store.auditErr.Error()) {
+		t.Fatalf("expected audit error in observability, got %q", store.state.LastError)
+	}
+}
+
+func assertMissingShellCleanup(t *testing.T, store *fakeStore) {
+	t.Helper()
+	killer := &fakeKiller{}
+	runner := testRunner(store, killer)
+	if err := runner.Tick(t.Context()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if !killer.killedPID(childProcess().PID) {
+		t.Fatal("expected cleanup after the original shell has exited")
 	}
 }
 
@@ -205,18 +307,21 @@ func TestTickKeepsAppliedEventsBounded(t *testing.T) {
 }
 
 type fakeStore struct {
-	events       []lifecycle.Event
-	state        lifecycle.State
-	procs        []process.Process
-	listErr      error
-	acknowledged bool
-	auditEvents  []audit.Event
+	events          []lifecycle.Event
+	state           lifecycle.State
+	procs           []process.Process
+	listErr         error
+	shellCreateTime int64
+	shellErr        error
+	acknowledged    bool
+	auditEvents     []audit.Event
+	auditErr        error
 }
 
 func newFakeStore(events ...lifecycle.Event) *fakeStore {
 	state := lifecycle.State{}
 	state.Ensure()
-	return &fakeStore{events: events, state: state}
+	return &fakeStore{events: events, state: state, shellCreateTime: shellProcess().CreateTime}
 }
 
 func siblingTabStore() *fakeStore {
@@ -271,7 +376,14 @@ func (s *fakeStore) List(context.Context) ([]process.Process, error) {
 	return s.procs, s.listErr
 }
 
+func (s *fakeStore) readCreateTime(context.Context, int32) (int64, error) {
+	return s.shellCreateTime, s.shellErr
+}
+
 func (s *fakeStore) Record(event audit.Event) error {
+	if s.auditErr != nil {
+		return s.auditErr
+	}
 	s.auditEvents = append(s.auditEvents, event)
 	return nil
 }
@@ -316,7 +428,8 @@ func testRunner(store *fakeStore, killer *fakeKiller) *Runner {
 	if killer == nil {
 		killer = &fakeKiller{}
 	}
-	return New(cfg, store, killer, store, Audit(store), Options{Now: nowFunc})
+	options := Options{Now: nowFunc, ReadCreateTime: store.readCreateTime}
+	return New(cfg, store, killer, store, Audit(store), options)
 }
 
 func nowFunc() time.Time {

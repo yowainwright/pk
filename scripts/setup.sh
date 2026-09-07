@@ -16,7 +16,7 @@ log() {
 
 require_command() {
   command_name=${1:?command name is required}
-  command -v "$command_name" >/dev/null 2>&1 && return
+  command -v "$command_name" > /dev/null 2>&1 && return
   fail "$command_name is required"
 }
 
@@ -27,13 +27,13 @@ repository_root() {
 
 ensure_git_repo() {
   root=${1:?repository root is required}
-  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 && return
+  git -C "$root" rev-parse --is-inside-work-tree > /dev/null 2>&1 && return
   fail "Run setup from a Git worktree"
 }
 
 configured_hooks_path() {
   root=${1:?repository root is required}
-  git -C "$root" config --get core.hooksPath 2>/dev/null || return 0
+  git -C "$root" config --get core.hooksPath 2> /dev/null || return 0
 }
 
 reject_configured_hooks_path() {
@@ -70,7 +70,7 @@ hook_template() {
   root=${1:?repository root is required}
   hook_name=${2:?hook name is required}
   case "$hook_name" in
-  pre-commit|commit-msg) printf '%s\n' "$root/scripts/hooks/$hook_name" ;;
+  pre-commit | commit-msg) printf '%s\n' "$root/scripts/hooks/$hook_name" ;;
   *) fail "Unknown hook: $hook_name" ;;
   esac
 }
@@ -149,7 +149,7 @@ claude_direct_agent_lint_command_raw() {
 codex_hooks_prefix() {
   printf '%s\n' \
     '{' \
-    '  "description": "Strict Go legibility lint for agent edits in this workspace.",' \
+    '  "description": "Strict shell and Go lint for agent edits in this workspace.",' \
     '  "hooks": {' \
     '    "PostToolUse": [' \
     '      {' \
@@ -163,7 +163,7 @@ codex_hooks_suffix() {
   printf '%s\n' \
     '            "command": "'"$command"'",' \
     '            "timeout": 120,' \
-    '            "statusMessage": "Checking Go legibility"' \
+    '            "statusMessage": "Checking shell and Go style"' \
     '          }' \
     '        ]' \
     '      }' \
@@ -229,6 +229,7 @@ file_contains_direct_agent_lint() {
 
 write_codex_hooks() {
   path=${1:?codex hooks path is required}
+  [ -L "$path" ] && fail "Refusing to replace Codex hooks symlink: $path"
   [ -f "$path" ] && file_contains_lint_session "$path" && return
   [ ! -f "$path" ] || file_contains_direct_agent_lint "$path" || fail "Refusing to replace existing Codex hooks: $path"
   mkdir -p "$(dirname "$path")"
@@ -280,6 +281,21 @@ install_agent_hooks() {
   root=${1:?repository root is required}
   write_codex_hooks "$(codex_hooks_path "$root")"
   write_claude_settings "$(claude_settings_path "$root")"
+  install_agent_stop_hook "$(codex_hooks_path "$root")"
+  install_agent_stop_hook "$(claude_settings_path "$root")"
+}
+
+install_agent_stop_hook() {
+  path=${1:?agent settings path is required}
+  require_command jq
+  temporary_path="$path.pk-stop.$$"
+  jq --arg command 'mise run lint/session' '
+    def managed: [.hooks[]?.command // ""] | any(. == $command);
+    .hooks.Stop = ((.hooks.Stop // [] | map(select(managed | not))) + [
+      {hooks: [{type: "command", command: $command, timeout: 120}]}
+    ])
+  ' "$path" > "$temporary_path"
+  mv "$temporary_path" "$path"
 }
 
 has_golangci_legibility_plugin() {
@@ -301,6 +317,19 @@ install_mise_tools() {
   mise install
 }
 
+has_supported_bash() {
+  bash -c '(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3) ))'
+}
+
+install_shell_runtime() {
+  has_supported_bash && return 0
+  [ "$(uname -s)" = "Darwin" ] || fail "Bash 4.3 or newer is required for shellcheck-legibility"
+  require_command brew
+  log "Installing Bash for shell readability checks..."
+  HOMEBREW_NO_AUTO_UPDATE=1 brew install bash
+  has_supported_bash || fail "Add Homebrew's bin directory to PATH so Bash 4.3+ is available"
+}
+
 run_setup_checks() {
   log "Checking repository lint..."
   mise run lint
@@ -316,11 +345,17 @@ setup_repository() {
   cd "$root"
   ensure_git_repo "$root"
   reject_configured_hooks_path "$root"
+  prepare_setup_tools "$mode"
   hooks_path="$(hooks_dir "$root")"
   install_hooks "$root" "$hooks_path"
   install_agent_hooks "$root"
   log "Installed managed hooks in $hooks_path"
+}
+
+prepare_setup_tools() {
+  mode=${1:-}
   [ "$mode" = "--hooks-only" ] && return
+  install_shell_runtime
   install_mise_tools
   run_setup_checks
 }
