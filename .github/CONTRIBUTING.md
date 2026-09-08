@@ -2,55 +2,41 @@
 
 ## Setup
 
-Requirements:
+Install mise, jq, and zsh; on macOS, also install Homebrew.
+Docker is needed for process tests and release previews.
 
-- Go and mise versions declared in `.mise.toml`
-- Docker for isolated process tests
-- GoReleaser for release-sensitive changes
-
-<!-- contributor setup commands derived from .mise.toml and scripts/setup.sh -->
+<!-- setup commands derived from .mise.toml and scripts/setup.sh -->
 
 ```sh
-git clone https://github.com/yowainwright/pk.git
-cd pk
-mise install
 mise run setup
 mise run build
 ```
 
-## Workflow
+Setup installs tools and hooks for Git and agents. Restart your agent session afterward.
 
-1. Branch from `main`.
-2. Keep the change focused.
-3. Add tests for behavior and regressions.
-4. Update documentation for user-facing changes.
-5. Run `mise run check`.
-6. Open a pull request.
+## Changes
 
-## Validation
+Branch from `main`, keep changes focused, test changed behavior, and update relevant docs.
+Before opening a pull request, run:
 
 ```sh
-mise run fmt-check
-mise run lint
-mise run test
-mise run test-e2e
-mise run test-process-e2e
-mise run security
-mise run release-preview
+mise run check
 ```
 
-Run the release preview for workflow, packaging, versioning, or Homebrew changes.
+Readability checks warn during normal use and fail for agent edits.
+Correctness and formatting errors always fail. See [`.mise.toml`](../.mise.toml) for all tasks.
 
-## Project Constraints
+## Release
 
-- Preserve preview-first behavior for destructive actions.
-- Require explicit `--apply` authorization before changing processes or system services.
-- Keep terminal output clear and restrained.
-- Do not add runtime dependencies without a concrete portability or correctness need.
-- Keep functions small, focused, and covered by tests.
+<!-- release commands derived from .mise.toml and scripts/release.sh -->
 
-## Security
+From a clean `main` synchronized with GitHub:
 
-Do not report vulnerabilities in public issues. Follow the [security policy].
+```sh
+mise run release-preview
+mise run release
+```
 
-[security policy]: SECURITY.md
+The preview does not publish. The release command asks before tagging, pushing, and publishing.
+
+Report vulnerabilities privately using the [security policy](SECURITY.md).

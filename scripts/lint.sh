@@ -16,7 +16,7 @@ fail() {
 
 require_command() {
   command_name=${1:?command name is required}
-  command -v "$command_name" >/dev/null 2>&1 && return
+  command -v "$command_name" > /dev/null 2>&1 && return
   fail "$command_name is required"
 }
 
@@ -31,8 +31,14 @@ parse_args() {
     --all) all=1 ;;
     --changed) all=0 ;;
     --setup-only) setup_only=1 ;;
-    -h|--help) usage; exit 0 ;;
-    *) usage; fail "Unknown lint option: $1" ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      fail "Unknown lint option: $1"
+      ;;
     esac
     shift
   done
@@ -67,7 +73,7 @@ custom_linter_needs_build() {
   [ ! -x "$custom_linter_path" ] && return 0
   custom_linter_config_changed "$custom_linter_path" && return 0
   built_go_version="$(
-    go version -m "$custom_linter_path" 2>/dev/null | awk 'NR == 1 { print $2 }'
+    go version -m "$custom_linter_path" 2> /dev/null | awk 'NR == 1 { print $2 }'
   )"
   current_go_version="$(go env GOVERSION)"
   [ "$built_go_version" != "$current_go_version" ]
@@ -76,23 +82,47 @@ custom_linter_needs_build() {
 run_shell_lint() {
   require_command shellcheck
   require_command shellcheck-legibility
-  set -- scripts/lint-session.sh scripts/lint.sh scripts/lib/go-tool.sh scripts/setup.sh
-  set -- "$@" scripts/hooks/commit-msg scripts/hooks/pre-commit
-  set -- "$@" tests/scripts/setup_test.sh
-  shellcheck -x "$@"
-  shellcheck-legibility check "$@" scripts/hooks
+  shell_files="$(git ls-files --cached --others --exclude-standard -- \
+    '*.sh' '*.bash' '*.zsh' 'scripts/hooks/*')"
+  [ -n "$shell_files" ] || return 0
+  printf '%s\n' "$shell_files" |
+    while IFS= read -r shell_file; do
+      lint_shell_file "$shell_file"
+    done
+}
+
+should_check_shell_legibility() {
+  shell_file=${1:?shell file is required}
+  [ "$all" -eq 1 ] && return 0
+  has_lint_base_rev || return 0
+  git diff --quiet "$lint_base_rev" -- "$shell_file" || return 0
+  [ -n "$(git ls-files --others --exclude-standard -- "$shell_file")" ]
+}
+
+lint_shell_file() {
+  shell_file=${1:?shell file is required}
+  [ -f "$shell_file" ] || return 0
+  case "$shell_file" in
+  *.zsh) ;; # ShellCheck does not support zsh; readability checks still apply.
+  *) shellcheck -x "$shell_file" ;;
+  esac
+  should_check_shell_legibility "$shell_file" || return 0
+  set -- "$shell_file"
+  [ "$strict" -eq 1 ] || set -- "$@" --exit-zero
+  shellcheck-legibility check --config scripts/.shellcheck-legibility.toml "$@"
 }
 
 build_custom_linter_if_needed() {
   linter_path=${1:?linter path is required}
   custom_linter_path=${2:?custom linter path is required}
   custom_linter_needs_build "$custom_linter_path" || return 0
-  "$linter_path" custom
+  mkdir -p "$PWD/tmp/lint-build"
+  TMPDIR="$PWD/tmp/lint-build" "$linter_path" custom
   config_checksum > "$(custom_linter_stamp_path "$custom_linter_path")"
 }
 
 has_lint_base_rev() {
-  git rev-parse --verify "$lint_base_rev" >/dev/null 2>&1
+  git rev-parse --verify "$lint_base_rev" > /dev/null 2>&1
 }
 
 has_changed_go_inputs() {

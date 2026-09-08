@@ -16,13 +16,16 @@ new_test_repository() {
 cleanup_test_root() {
   case "$TEST_TMP_ROOT" in
   "$TEST_ROOT"/tmp/setup-tests) rm -rf -- "$TEST_TMP_ROOT" ;;
-  *) printf 'Refusing to remove %s\n' "$TEST_TMP_ROOT" >&2; return 1 ;;
+  *)
+    printf 'Refusing to remove %s\n' "$TEST_TMP_ROOT" >&2
+    return 1
+    ;;
   esac
 }
 
 write_fake_mise() {
   path=${1:?fake mise path is required}
-  cat > "$path" <<'EOF'
+  cat > "$path" << 'EOF'
 #!/usr/bin/env sh
 set -eu
 printf '%s\n' "$*" >> "$MISE_LOG"
@@ -39,6 +42,8 @@ create_test_repository() {
   cp "$TEST_ROOT/.custom-gcl.yml" "$repository/.custom-gcl.yml"
   cp "$TEST_ROOT/.golangci.yml" "$repository/.golangci.yml"
   write_fake_mise "$repository/bin/mise"
+  printf '#!/usr/bin/env sh\nexit 0\n' > "$repository/bin/bash"
+  chmod 0755 "$repository/bin/bash"
   git -C "$repository" init --quiet
 }
 
@@ -93,7 +98,7 @@ assert_setup_fails() {
 
 assert_command_fails() {
   set +e
-  "$@" >/dev/null 2>&1
+  "$@" > /dev/null 2>&1
   status=$?
   set -e
   [[ "$status" -ne 0 ]]
@@ -105,6 +110,8 @@ assert_agent_hooks_created() {
   [[ -f "$repository/.claude/settings.json" ]]
   grep -Fq 'scripts/lint-session.sh' "$repository/.codex/hooks.json"
   grep -Fq 'scripts/lint-session.sh' "$repository/.claude/settings.json"
+  jq -e '.hooks.Stop[0].hooks[0].command == "mise run lint/session"' "$repository/.codex/hooks.json" > /dev/null
+  jq -e '.hooks.Stop[0].hooks[0].command == "mise run lint/session"' "$repository/.claude/settings.json" > /dev/null
 }
 
 run_hook() {
@@ -120,7 +127,7 @@ test_setup_installs_hooks_and_runs_mise() {
   repository="$(new_test_repository)"
   create_test_repository "$repository"
 
-  run_setup "$repository" >/dev/null
+  run_setup "$repository" > /dev/null
 
   assert_installed_hook "$repository" pre-commit
   assert_installed_hook "$repository" commit-msg
@@ -135,13 +142,15 @@ test_setup_installs_hooks_and_runs_mise() {
 test_setup_is_idempotent() {
   repository="$(new_test_repository)"
   create_test_repository "$repository"
-  run_setup "$repository" >/dev/null
+  run_setup "$repository" > /dev/null
 
-  run_setup "$repository" >/dev/null
+  run_setup "$repository" > /dev/null
 
   assert_installed_hook "$repository" pre-commit
   assert_installed_hook "$repository" commit-msg
   assert_no_hook "$repository" pre-push
+  jq -e '.hooks.Stop | length == 1' "$repository/.codex/hooks.json" > /dev/null
+  jq -e '.hooks.Stop | length == 1' "$repository/.claude/settings.json" > /dev/null
 }
 
 test_setup_removes_retired_managed_pre_push() {
@@ -150,7 +159,7 @@ test_setup_removes_retired_managed_pre_push() {
   printf '#!/usr/bin/env sh\n# Managed by pk scripts/setup.sh\nexec mise run check\n' > "$repository/.git/hooks/pre-push"
   chmod 0755 "$repository/.git/hooks/pre-push"
 
-  run_setup "$repository" --hooks-only >/dev/null
+  run_setup "$repository" --hooks-only > /dev/null
 
   assert_no_hook "$repository" pre-push
 }
@@ -161,7 +170,7 @@ test_setup_preserves_unmanaged_pre_push() {
   printf '#!/usr/bin/env sh\nprintf custom\\n\n' > "$repository/.git/hooks/pre-push"
   chmod 0755 "$repository/.git/hooks/pre-push"
 
-  run_setup "$repository" --hooks-only >/dev/null
+  run_setup "$repository" --hooks-only > /dev/null
 
   [[ -x "$repository/.git/hooks/pre-push" ]]
   grep -Fq 'printf custom' "$repository/.git/hooks/pre-push"
@@ -171,7 +180,7 @@ test_setup_hooks_only_skips_mise() {
   repository="$(new_test_repository)"
   create_test_repository "$repository"
 
-  run_setup "$repository" --hooks-only >/dev/null
+  run_setup "$repository" --hooks-only > /dev/null
 
   assert_installed_hook "$repository" pre-commit
   assert_agent_hooks_created "$repository"
@@ -182,7 +191,7 @@ test_installed_hooks_execute_expected_tasks() {
   repository="$(new_test_repository)"
   message_path="$repository/message.txt"
   create_test_repository "$repository"
-  run_setup "$repository" --hooks-only >/dev/null
+  run_setup "$repository" --hooks-only > /dev/null
 
   run_hook "$repository" pre-commit
   printf 'feat: add setup\n' > "$message_path"
@@ -220,7 +229,7 @@ test_setup_merges_existing_claude_settings() {
   mkdir -p "$repository/.claude"
   printf '{"permissions":{"allow":["Read"]}}\n' > "$repository/.claude/settings.json"
 
-  run_setup "$repository" --hooks-only >/dev/null
+  run_setup "$repository" --hooks-only > /dev/null
 
   grep -Fq 'scripts/lint-session.sh' "$repository/.claude/settings.json"
   grep -Fq '"permissions"' "$repository/.claude/settings.json"
@@ -233,7 +242,7 @@ test_setup_uses_local_settings_for_claude_symlink() {
   ln -s "$repository/missing-settings.json" "$repository/.claude/settings.json"
   printf '{"hooks":{"PostToolUse":[]}}\n' > "$repository/.claude/settings.local.json"
 
-  run_setup "$repository" --hooks-only >/dev/null
+  run_setup "$repository" --hooks-only > /dev/null
 
   [[ -L "$repository/.claude/settings.json" ]]
   grep -Fq 'scripts/lint-session.sh' "$repository/.claude/settings.local.json"
@@ -250,7 +259,10 @@ test_setup_requires_go_legibility_config() {
 run_test() {
   name=${1:?test name is required}
   set +e
-  (set -euo pipefail; "$name")
+  (
+    set -euo pipefail
+    "$name"
+  )
   status=$?
   set -e
   [ "$status" -eq 0 ] || return_failed_test "$name"

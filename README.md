@@ -1,5 +1,11 @@
 # pk
 
+Background cleanup for your terminal. `pk` tracks processes in zsh sessions and
+cleans up unprotected leftovers when those sessions end.
+
+Install it once, open a new shell, and work normally. There is no command to run
+for each session.
+
 <!-- project badges matching GitHub repository, CI workflow, OpenSSF Scorecard, and Codecov upload -->
 
 [![GitHub release](https://img.shields.io/github/v/release/yowainwright/pk?sort=semver)](https://github.com/yowainwright/pk/releases)
@@ -7,126 +13,83 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/yowainwright/pk/badge)](https://scorecard.dev/viewer/?uri=github.com/yowainwright/pk)
 [![codecov](https://codecov.io/gh/yowainwright/pk/branch/main/graph/badge.svg)](https://codecov.io/gh/yowainwright/pk)
 
-Background process lifecycle cleanup for agent and terminal sessions.
+[Install once](#install-once) · [While you work](#while-you-work) ·
+[Check on it](#check-on-it) · [Uninstall](#uninstall)
 
-## Installation
+## Install once
 
-<!-- install commands matching go.mod module path and Homebrew cask release configuration -->
+<!-- install commands derived from go.mod, cmd/pk/main.go, internal/service/service.go, and internal/shell/shell.go -->
 
-Install the latest release with Homebrew:
-
-```sh
-brew install --cask yowainwright/tap/pk
-```
-
-Or install with Go 1.26 or newer:
+Requires **interactive zsh** on macOS (`launchd`) or Linux (`systemd --user`).
+From a local checkout, with Go 1.26+ and Go’s install directory on your `PATH`:
 
 ```sh
-go install github.com/yowainwright/pk/cmd/pk@latest
-```
-
-## CLI
-
-`pk` runs as a supervised background daemon. Terminal lifecycle events bind
-processes to the tab/session that started them; the daemon cleans up tracked
-ghost processes when their owner disappears or exceeds the inactive limit.
-The lifecycle store tracks terminal sessions, tabs, windows, agent sessions,
-and user sessions separately.
-
-> Run `pk --help` or `pk help <command>` for current command help.
-
-<!-- CLI command usage and options implemented by cmd/pk/usage.go, cmd/pk/main.go, and internal/config/config.go -->
-
-### Commands
-
-```sh
-Usage:
-  pk <command> [options]
-
-Commands:
-  status               Show daemon status
-  obs                  Show daemon observability
-  history              Show cleanup audit events
-  install --apply      Install the daemon and shell lifecycle plugin
-  uninstall            Remove the daemon and shell lifecycle plugin
-  doctor               Print a shareable diagnostic report
-  version              Print the version
-```
-
-### Common Flows
-
-Install, check, observe, or remove the daemon:
-
-```sh
+go install ./cmd/pk
 pk install --apply
-pk status
+```
+
+This starts the background service and adds the session hook to your `.zshrc`.
+`--apply` enables automatic process termination.
+
+**Open a new zsh tab.** The hook loads there, and `pk` takes care of tracking
+and cleanup in the background.
+
+## While you work
+
+<!-- daemon ownership, protected names, defaults, and signal behavior derived from internal/daemon/daemon.go, internal/config/config.go, and internal/killer/killer.go -->
+
+```text
+Open a zsh tab → run your tools → close the session → pk cleans up tracked leftovers
+```
+
+An idle prompt alone does not trigger cleanup. Processes on the
+[protected-name list](internal/config/config.go), including `zsh`, `codex`, and
+`claude`, are skipped. Protection applies to each process individually.
+
+<details>
+<summary>How tracking and cleanup work</summary>
+
+The daemon observes child processes every three seconds. It can only clean up
+processes it observed before their session ended; processes that detach between
+checks can be missed.
+
+Before terminating a target, it verifies the PID and creation time, sends
+`SIGTERM`, then waits up to two seconds before using `SIGKILL`.
+An unreadable shell identity defers cleanup.
+
+The bundled integration tracks zsh sessions. Tracking separate agent, window,
+or user-session lifecycles requires events from an integration.
+See the [daemon](internal/daemon/daemon.go) and [zsh hook](internal/shell/pk.zsh).
+
+</details>
+
+## Check on it
+
+<!-- observability commands derived from cmd/pk/main.go -->
+
+For an occasional check:
+
+```sh
 pk obs
+```
+
+Look for a running daemon, a recent `last tick`, and a recorded session.
+Zero managed processes is normal when nothing is running.
+For troubleshooting, see [Support](.github/SUPPORT.md).
+
+<!-- CLI command usage implemented by cmd/pk/usage.go -->
+
+Manual cleanup and diagnostic tools are available through `pk help`.
+
+## Uninstall
+
+<!-- uninstall behavior derived from internal/service/service.go and internal/shell/shell.go -->
+
+```sh
 pk uninstall
 ```
 
-Inspect history or diagnostics:
+This stops the service and removes the shell hook. Open a new shell afterward.
+The binary and stored history remain.
 
-```sh
-pk history
-pk doctor
-```
-
-### Option Reference
-
-Global options:
-
-- `--color=auto|always|never` controls terminal color.
-
-Daemon options:
-
-- `--interval DURATION` sets the check interval. Default: `3s`.
-- `--stale DURATION` sets inactive agent session age before cleanup. Default:
-  disabled.
-- `--protected NAMES` appends comma-separated process names to the protected
-  set.
-
-`pk install --apply` uses `launchd` on macOS and `systemd --user` on Linux.
-It also installs a zsh plugin that emits session lifecycle events. Cleanup
-writes bounded JSONL audit events; set `PK_AUDIT_PATH` to override the default
-audit file. `doctor` excludes paths, commands, process details, and audit
-contents.
-
-## Development
-
-<!-- local setup and check commands derived from .mise.toml and scripts/setup.sh -->
-
-Set up tools and run checks:
-
-```sh
-mise install
-mise run setup
-mise run check
-```
-
-## Release
-
-Select and validate a release candidate from a clean, synchronized `main`
-branch:
-
-```sh
-mise run release
-```
-
-The release script accepts `v0` semantic versions only. It suggests release
-candidates from existing `v0.*` tags, runs the complete local release preview,
-verifies that the version is unused, then asks before tagging, pushing the tag,
-and dispatching the release workflow. Pass a version to skip the selector:
-`mise run release v0.1.0-rc.1`. GoReleaser builds four binaries, generates
-checksums and a Homebrew cask, and signs the checksum with keyless cosign. The
-non-canceling publisher verifies the assets, signature, and generated cask
-before publication. Stable releases update `yowainwright/homebrew-tap`;
-prereleases do not.
-
-## Contributing and Support
-
-See the [contribution guide], [support guide], and [security policy]. Report
-vulnerabilities privately through GitHub Security Advisories.
-
-[contribution guide]: .github/CONTRIBUTING.md
-[security policy]: .github/SECURITY.md
-[support guide]: .github/SUPPORT.md
+[Contributing](.github/CONTRIBUTING.md) · [Security](.github/SECURITY.md)
