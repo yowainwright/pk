@@ -391,14 +391,21 @@ func (r *Runner) reconcile(
 	procs []process.Process,
 ) (lifecycle.State, error) {
 	live := liveProcesses(procs)
+	deferred := make(map[string]bool)
 	for _, session := range state.Sessions {
 		var err error
 		state, err = r.reconcileSession(ctx, state, session, procs, live)
-		if err != nil {
-			return state, err
+		if err == nil {
+			continue
 		}
+		deferred[session.ID] = true
+		state.LastError = err.Error()
+		state.Daemon.LastError = err.Error()
 	}
-	return r.killEligible(ctx, state, live), nil
+	if err := ctx.Err(); err != nil {
+		return state, err
+	}
+	return r.killEligible(ctx, state, live, deferred), nil
 }
 
 func liveProcesses(procs []process.Process) map[string]process.Process {
@@ -519,8 +526,12 @@ func (r *Runner) killEligible(
 	ctx context.Context,
 	state lifecycle.State,
 	live map[string]process.Process,
+	deferred map[string]bool,
 ) lifecycle.State {
 	for key, managed := range state.Processes {
+		if deferred[managed.TerminalSessionID] {
+			continue
+		}
 		proc, ok := live[key]
 		if !ok {
 			delete(state.Processes, key)

@@ -84,11 +84,11 @@ func TestTickDefersCleanupWhenShellIdentityCannotBeRead(t *testing.T) {
 	killer := &fakeKiller{}
 	runner := testRunner(store, killer)
 	err := runner.Tick(t.Context())
-	if !errors.Is(err, os.ErrPermission) {
-		t.Fatalf("expected permission error without a kill, got %v", err)
+	if err != nil {
+		t.Fatalf("expected a deferred session without stopping the daemon, got %v", err)
 	}
 	assertSessionSurvives(t, store, killer)
-	if store.state.LastError == "" {
+	if !strings.Contains(store.state.LastError, os.ErrPermission.Error()) {
 		t.Fatal("expected the error to be saved without ending the session")
 	}
 }
