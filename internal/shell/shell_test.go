@@ -1,11 +1,98 @@
 package shell
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestZshPromptRecordsCommandCompletion(t *testing.T) {
+	for _, exitCode := range []string{"0", "7"} {
+		t.Run("exit_"+exitCode, func(t *testing.T) {
+			installer, eventsPath := zshFixture(t)
+			runZshPrompt(t, installer, eventsPath, exitCode)
+			events := readFile(t, eventsPath)
+			assertZshEventCount(t, events, "command.start", 1)
+			assertZshEventCount(t, events, "command.finish", 1)
+			assertZshEventCount(t, events, "session.inactive", 2)
+			if !strings.Contains(events, "--exit-code "+exitCode+"\n") {
+				t.Fatalf("missing command exit code %s:\n%s", exitCode, events)
+			}
+		})
+	}
+}
+
+func zshFixture(t *testing.T) (Installer, string) {
+	t.Helper()
+	installer := testInstaller(t)
+	installer.Executable = filepath.Join(installer.Home, "pk")
+	if err := os.WriteFile(installer.Executable, []byte(zshFixtureBinary), 0o700); err != nil {
+		t.Fatalf("writing fixture executable: %v", err)
+	}
+	if err := installer.Install(); err != nil {
+		t.Fatalf("installing shell plugin: %v", err)
+	}
+	return installer, filepath.Join(installer.Home, "events")
+}
+
+func runZshPrompt(t *testing.T, installer Installer, eventsPath string, exitCode string) {
+	t.Helper()
+	zsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh is required for shell integration tests")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	pluginPath := installer.PluginPath()
+	args := []string{"-dfi", "-c", zshPromptScript, "pk-test", pluginPath, exitCode}
+	command := exec.CommandContext(ctx, zsh, args...)
+	command.Env = append(zshTestEnvironment(), "PK_TEST_EVENT_LOG="+eventsPath)
+	output, err := command.CombinedOutput()
+	failed := err != nil || len(output) != 0
+	if failed {
+		t.Fatalf("running zsh prompt: %v\n%s", err, output)
+	}
+}
+
+func zshTestEnvironment() []string {
+	environment := make([]string, 0)
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		inheritedSession := name == "PK_TERMINAL_SESSION_ID" || name == "PK_DISABLE_SESSION"
+		if !inheritedSession {
+			environment = append(environment, entry)
+		}
+	}
+	return environment
+}
+
+func assertZshEventCount(t *testing.T, events string, kind string, expected int) {
+	t.Helper()
+	count := strings.Count(events, "--kind "+kind+" ")
+	if count != expected {
+		t.Fatalf("expected %d %s events, got %d:\n%s", expected, kind, count, events)
+	}
+}
+
+const zshFixtureBinary = `#!/bin/sh
+set -eu
+if [ "$1" = "__session-id" ]; then
+  printf '%s\n' test-session
+  exit 0
+fi
+printf '%s\n' "$*" >> "$PK_TEST_EVENT_LOG"
+`
+
+const zshPromptScript = `source "$1"
+_pk_preexec
+(exit "$2")
+_pk_precmd
+_pk_precmd
+`
 
 func TestInstallWritesPluginAndZshrcLine(t *testing.T) {
 	installer := testInstaller(t)

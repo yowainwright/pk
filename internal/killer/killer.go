@@ -148,7 +148,7 @@ func inspectTarget(ctx context.Context, target appProcess.Process) (targetState,
 		return targetGone, fmt.Errorf("process %d has no creation time", target.PID)
 	}
 	createTime, err := readProcessCreateTime(ctx, target.PID)
-	if processGone(err) {
+	if appProcess.IsGone(err) {
 		return targetGone, nil
 	}
 	if err != nil {
@@ -160,16 +160,6 @@ func inspectTarget(ctx context.Context, target appProcess.Process) (targetState,
 	return targetCurrent, nil
 }
 
-func processGone(err error) bool {
-	if errors.Is(err, gopsutilProcess.ErrorProcessNotRunning) {
-		return true
-	}
-	if errors.Is(err, os.ErrNotExist) {
-		return true
-	}
-	return errors.Is(err, syscall.ESRCH)
-}
-
 func signalProcess(proc processHandle, pid int32, signal syscall.Signal) error {
 	err := proc.Signal(signal)
 	if err == nil {
@@ -178,7 +168,7 @@ func signalProcess(proc processHandle, pid int32, signal syscall.Signal) error {
 	if errors.Is(err, os.ErrProcessDone) {
 		return nil
 	}
-	if processGone(err) {
+	if appProcess.IsGone(err) {
 		return nil
 	}
 	return fmt.Errorf("sending %s to %d: %w", signal, pid, err)

@@ -4,28 +4,33 @@ set -euo pipefail
 readonly PK_PUBLISH_WORKFLOW="release.yml"
 readonly PK_GITHUB_REPOSITORY="yowainwright/pk"
 
+release_color_enabled() {
+  local descriptor="${1:?}"
+  [[ -t "$descriptor" ]] && [[ -z "${NO_COLOR:-}" ]] && [[ "${TERM:-}" != "dumb" ]]
+}
+
+release_print() {
+  local descriptor="${1:?}"
+  local color="${2:?}"
+  local use_color=false
+  shift 2
+  release_color_enabled "$descriptor" && use_color=true
+  case "$use_color" in
+  true) printf '\033[%sm%s\033[0m\n' "$color" "$*" ;;
+  *) printf '%s\n' "$*" ;;
+  esac
+}
+
 release_info() {
-  if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
-    printf '\033[36m%s\033[0m\n' "$*"
-    return
-  fi
-  printf '%s\n' "$*"
+  release_print 1 36 "$@"
 }
 
 release_success() {
-  if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
-    printf '\033[32m%s\033[0m\n' "$*"
-    return
-  fi
-  printf '%s\n' "$*"
+  release_print 1 32 "$@"
 }
 
 release_error() {
-  if [[ -t 2 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
-    printf '\033[31m%s\033[0m\n' "$*" >&2
-    return
-  fi
-  printf '%s\n' "$*" >&2
+  release_print 2 31 "$@" >&2
 }
 
 release_fail() {
@@ -34,7 +39,7 @@ release_fail() {
 }
 
 release_require() {
-  command -v "$1" >/dev/null 2>&1 || release_fail "Required command not found: $1"
+  command -v "$1" > /dev/null 2>&1 || release_fail "Required command not found: $1"
 }
 
 release_require_tools() {
@@ -43,15 +48,19 @@ release_require_tools() {
   release_require mise || return
 }
 
+release_require_repository() {
+  [[ "$(git rev-parse --is-inside-work-tree)" == "true" ]] && return 0
+  release_fail "Run from a Git repository"
+}
+
+release_require_clean_tree() {
+  [[ -z "$(git status --porcelain)" ]] && return 0
+  release_fail "Working tree must be clean"
+}
+
 release_require_clean_main() {
-  [[ "$(git rev-parse --is-inside-work-tree)" == "true" ]] || {
-    release_fail "Run from a Git repository"
-    return
-  }
-  [[ -z "$(git status --porcelain)" ]] || {
-    release_fail "Working tree must be clean"
-    return
-  }
+  release_require_repository || return
+  release_require_clean_tree || return
   [[ "$(git branch --show-current)" == "main" ]] || release_fail "Release from main"
 }
 
@@ -68,7 +77,7 @@ release_preflight() {
   release_require_tools || return
   release_require_clean_main || return
   release_sync_main || return
-  gh auth status >/dev/null
+  gh auth status > /dev/null
   local repository
   repository="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
   [[ "$repository" == "$PK_GITHUB_REPOSITORY" ]] || release_fail "Expected $PK_GITHUB_REPOSITORY, got $repository"
@@ -77,10 +86,8 @@ release_preflight() {
 release_validate_version() {
   local pattern
   pattern='^v0\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
-  [[ "$1" =~ $pattern ]] || {
-    release_fail "Version must be v-prefixed v0 SemVer: $1"
-    return
-  }
+  [[ "$1" =~ $pattern ]] && return 0
+  release_fail "Version must be v-prefixed v0 SemVer: $1"
 }
 
 release_parse_args() {
@@ -88,56 +95,58 @@ release_parse_args() {
   PK_RELEASE_VERSION=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --dry-run) PK_RELEASE_DRY_RUN=true ;;
-      v*) PK_RELEASE_VERSION="$1" ;;
-      *) release_fail "Usage: scripts/release.sh [--dry-run] [v0.x.y[-prerelease]]"; return ;;
+    --dry-run) PK_RELEASE_DRY_RUN=true ;;
+    v*) PK_RELEASE_VERSION="$1" ;;
+    *)
+      release_fail "Usage: scripts/release.sh [--dry-run] [v0.x.y[-prerelease]]"
+      return
+      ;;
     esac
     shift
   done
-  if [[ -n "$PK_RELEASE_VERSION" ]]; then
-    release_validate_version "$PK_RELEASE_VERSION" || return
-  fi
+  [[ -z "$PK_RELEASE_VERSION" ]] || release_validate_version "$PK_RELEASE_VERSION" || return
   readonly PK_RELEASE_DRY_RUN
 }
 
 release_current_version() {
   local current
   current="$(git tag --list 'v0.*' --sort=-version:refname | head -n 1)"
-  if [[ -n "$current" ]]; then
-    printf '%s' "$current"
-    return
-  fi
-  printf 'v0.0.0'
+  printf '%s' "${current:-v0.0.0}"
 }
 
 release_version_parts() {
   local core
   core="${1#v}"
   core="${core%%[-+]*}"
-  IFS=. read -r PK_RELEASE_MAJOR PK_RELEASE_MINOR PK_RELEASE_PATCH_NUMBER <<< "$core"
+  IFS=. read -r _ PK_RELEASE_MINOR PK_RELEASE_PATCH_NUMBER <<< "$core"
 }
 
 release_increment_rc() {
-  local version="$1"
+  local version="${1:?}"
   local core="${version%%-rc.*}"
   local suffix="${version##*-rc.}"
-  if [[ "$version" == "$core" || ! "$suffix" =~ ^[0-9]+$ ]]; then
-    printf '%s-rc.1' "$core"
-    return
-  fi
+  [[ "$version" != "$core" ]] || suffix=0
+  [[ "$suffix" =~ ^[0-9]+$ ]] || suffix=0
   printf '%s-rc.%s' "$core" "$((suffix + 1))"
+}
+
+release_next_candidate() {
+  case "$PK_RELEASE_CURRENT" in
+  *-*)
+    PK_RELEASE_NEXT="${PK_RELEASE_CURRENT%%-*}"
+    PK_RELEASE_RC="$(release_increment_rc "$PK_RELEASE_CURRENT")"
+    ;;
+  *)
+    PK_RELEASE_NEXT="v0.$((PK_RELEASE_MINOR + 1)).0-rc.1"
+    PK_RELEASE_RC="$PK_RELEASE_NEXT"
+    ;;
+  esac
 }
 
 release_candidates() {
   PK_RELEASE_CURRENT="$(release_current_version)"
   release_version_parts "$PK_RELEASE_CURRENT"
-  if [[ "$PK_RELEASE_CURRENT" == *-* ]]; then
-    PK_RELEASE_NEXT="${PK_RELEASE_CURRENT%%-*}"
-    PK_RELEASE_RC="$(release_increment_rc "$PK_RELEASE_CURRENT")"
-  else
-    PK_RELEASE_NEXT="v0.$((PK_RELEASE_MINOR + 1)).0-rc.1"
-    PK_RELEASE_RC="$PK_RELEASE_NEXT"
-  fi
+  release_next_candidate
   PK_RELEASE_PATCH="v0.$PK_RELEASE_MINOR.$((PK_RELEASE_PATCH_NUMBER + 1))"
   PK_RELEASE_MINOR_VERSION="v0.$((PK_RELEASE_MINOR + 1)).0"
   readonly PK_RELEASE_CURRENT PK_RELEASE_NEXT PK_RELEASE_RC
@@ -167,36 +176,40 @@ release_select_version() {
   release_menu
   read -r -p "Choose a version [1]: " choice
   case "${choice:-1}" in
-    1) PK_RELEASE_VERSION="$PK_RELEASE_NEXT" ;;
-    2) PK_RELEASE_VERSION="$PK_RELEASE_PATCH" ;;
-    3) PK_RELEASE_VERSION="$PK_RELEASE_MINOR_VERSION" ;;
-    4) PK_RELEASE_VERSION="$PK_RELEASE_RC" ;;
-    5) PK_RELEASE_VERSION="$(release_custom_version)" ;;
-    *) release_fail "Unknown version choice: $choice"; return ;;
+  1) PK_RELEASE_VERSION="$PK_RELEASE_NEXT" ;;
+  2) PK_RELEASE_VERSION="$PK_RELEASE_PATCH" ;;
+  3) PK_RELEASE_VERSION="$PK_RELEASE_MINOR_VERSION" ;;
+  4) PK_RELEASE_VERSION="$PK_RELEASE_RC" ;;
+  5) PK_RELEASE_VERSION="$(release_custom_version)" ;;
+  *)
+    release_fail "Unknown version choice: $choice"
+    return
+    ;;
   esac
   release_validate_version "$PK_RELEASE_VERSION" || return
 }
 
-release_require_available_version() {
+release_require_local_tag_available() {
+  ! git rev-parse -q --verify "refs/tags/$PK_RELEASE_VERSION" > /dev/null && return 0
+  release_fail "Local tag already exists: $PK_RELEASE_VERSION"
+}
+
+release_require_remote_tag_available() {
   local remote_status
-  if git rev-parse -q --verify "refs/tags/$PK_RELEASE_VERSION" >/dev/null; then
-    release_fail "Local tag already exists: $PK_RELEASE_VERSION"
-    return
-  fi
   remote_status=0
-  git ls-remote --exit-code --tags origin "refs/tags/$PK_RELEASE_VERSION" >/dev/null 2>&1 || remote_status=$?
-  if [[ "$remote_status" == "0" ]]; then
-    release_fail "Remote tag already exists: $PK_RELEASE_VERSION"
-    return
-  fi
-  if [[ "$remote_status" != "2" ]]; then
-    release_fail "Could not check remote tag: $PK_RELEASE_VERSION"
-    return
-  fi
-  if gh release view "$PK_RELEASE_VERSION" >/dev/null 2>&1; then
-    release_fail "GitHub release already exists: $PK_RELEASE_VERSION"
-    return
-  fi
+  git ls-remote --exit-code --tags origin "refs/tags/$PK_RELEASE_VERSION" > /dev/null 2>&1 || remote_status=$?
+  case "$remote_status" in
+  2) return 0 ;;
+  0) release_fail "Remote tag already exists: $PK_RELEASE_VERSION" ;;
+  *) release_fail "Could not check remote tag: $PK_RELEASE_VERSION" ;;
+  esac
+}
+
+release_require_available_version() {
+  release_require_local_tag_available || return
+  release_require_remote_tag_available || return
+  ! gh release view "$PK_RELEASE_VERSION" > /dev/null 2>&1 && return 0
+  release_fail "GitHub release already exists: $PK_RELEASE_VERSION"
 }
 
 release_preview() {
@@ -224,15 +237,20 @@ release_main() {
   release_require_available_version || return
   release_preview || return
   release_info "Selected $PK_RELEASE_VERSION"
-  if [[ "$PK_RELEASE_DRY_RUN" == "true" ]]; then
+  case "$PK_RELEASE_DRY_RUN" in
+  true)
     release_success "Dry run complete; no GitHub state changed"
     return
-  fi
+    ;;
+  esac
   release_confirm "Tag, push, and dispatch $PK_RELEASE_VERSION?"
   release_publish
   release_success "Dispatched release workflow for $PK_RELEASE_VERSION"
 }
 
-if [[ "${_PK_RELEASE_SOURCED:-false}" != "true" ]]; then
+release_dispatch() {
+  [[ "${_PK_RELEASE_SOURCED:-false}" != "true" ]] || return 0
   release_main "$@"
-fi
+}
+
+release_dispatch "$@"

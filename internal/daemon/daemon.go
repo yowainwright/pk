@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -26,18 +27,20 @@ type Audit interface {
 }
 
 type Options struct {
-	Now       func() time.Time
-	StartedAt time.Time
+	Now            func() time.Time
+	StartedAt      time.Time
+	ReadCreateTime func(context.Context, int32) (int64, error)
 }
 
 type Runner struct {
-	cfg       *config.Config
-	lister    process.Lister
-	killer    killer.Killer
-	store     Store
-	audit     Audit
-	now       func() time.Time
-	startedAt time.Time
+	cfg            *config.Config
+	lister         process.Lister
+	killer         killer.Killer
+	store          Store
+	audit          Audit
+	now            func() time.Time
+	startedAt      time.Time
+	readCreateTime func(context.Context, int32) (int64, error)
 }
 
 const maxAppliedEventIDs = 2048
@@ -51,13 +54,14 @@ func New(
 	options Options,
 ) *Runner {
 	return &Runner{
-		cfg:       cfg,
-		lister:    lister,
-		killer:    k,
-		store:     store,
-		audit:     audit,
-		now:       daemonClock(options.Now),
-		startedAt: daemonStartedAt(options.StartedAt),
+		cfg:            cfg,
+		lister:         lister,
+		killer:         k,
+		store:          store,
+		audit:          audit,
+		now:            daemonClock(options.Now),
+		startedAt:      daemonStartedAt(options.StartedAt),
+		readCreateTime: daemonCreateTimeReader(options.ReadCreateTime),
 	}
 }
 
@@ -80,7 +84,14 @@ func (r *Runner) Tick(ctx context.Context) error {
 	if err != nil {
 		return r.saveError(state, err)
 	}
-	state = r.reconcile(ctx, state, procs)
+	state, err = r.reconcile(ctx, state, procs)
+	if err != nil {
+		return r.saveError(state, err)
+	}
+	return r.finishTick(state, events)
+}
+
+func (r *Runner) finishTick(state lifecycle.State, events []lifecycle.Event) error {
 	setDaemonState(&state, os.Getpid(), r.startedAt, r.now())
 	retainAppliedEvents(&state, events)
 	if err := r.store.SaveState(state); err != nil {
@@ -378,12 +389,23 @@ func (r *Runner) reconcile(
 	ctx context.Context,
 	state lifecycle.State,
 	procs []process.Process,
-) lifecycle.State {
+) (lifecycle.State, error) {
 	live := liveProcesses(procs)
+	deferred := make(map[string]bool)
 	for _, session := range state.Sessions {
-		state = r.reconcileSession(state, session, procs, live)
+		var err error
+		state, err = r.reconcileSession(ctx, state, session, procs, live)
+		if err == nil {
+			continue
+		}
+		deferred[session.ID] = true
+		state.LastError = err.Error()
+		state.Daemon.LastError = err.Error()
 	}
-	return r.killEligible(ctx, state, live)
+	if err := ctx.Err(); err != nil {
+		return state, err
+	}
+	return r.killEligible(ctx, state, live, deferred), nil
 }
 
 func liveProcesses(procs []process.Process) map[string]process.Process {
@@ -396,21 +418,46 @@ func liveProcesses(procs []process.Process) map[string]process.Process {
 }
 
 func (r *Runner) reconcileSession(
+	ctx context.Context,
 	state lifecycle.State,
 	session lifecycle.TerminalSession,
 	procs []process.Process,
 	live map[string]process.Process,
-) lifecycle.State {
+) (lifecycle.State, error) {
 	if sessionEnded(session) {
 		state.Sessions[session.ID] = session
-		return state
+		return state, nil
 	}
-	root, exists := live[session.ShellProcessKey.String()]
+	exists, err := r.sessionExists(ctx, session.ShellProcessKey, live)
+	if err != nil {
+		return state, fmt.Errorf("checking session %s: %w", session.ID, err)
+	}
 	if !exists {
-		return sessionMissing(state, session, r.now())
+		return sessionMissing(state, session, r.now()), nil
 	}
 	state.Sessions[session.ID] = liveSession(session, r.now())
-	return trackDescendants(state, session.ID, root, procs, r.now())
+	return trackDescendants(state, session.ID, session.ShellProcessKey.PID, procs, r.now()), nil
+}
+
+func (r *Runner) sessionExists(
+	ctx context.Context,
+	key lifecycle.ProcessKey,
+	live map[string]process.Process,
+) (bool, error) {
+	if _, exists := live[key.String()]; exists {
+		return true, nil
+	}
+	createTime, err := r.readCreateTime(ctx, key.PID)
+	if process.IsGone(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if createTime <= 0 {
+		return false, fmt.Errorf("shell %d has no creation time", key.PID)
+	}
+	return createTime == key.CreateTime, nil
 }
 
 func sessionEnded(session lifecycle.TerminalSession) bool {
@@ -444,11 +491,11 @@ func liveSession(session lifecycle.TerminalSession, now time.Time) lifecycle.Ter
 func trackDescendants(
 	state lifecycle.State,
 	sessionID string,
-	root process.Process,
+	rootPID int32,
 	procs []process.Process,
 	now time.Time,
 ) lifecycle.State {
-	for _, proc := range processtree.Descendants(procs, root.PID) {
+	for _, proc := range processtree.Descendants(procs, rootPID) {
 		state = trackProcess(state, sessionID, proc, now)
 	}
 	return state
@@ -479,8 +526,12 @@ func (r *Runner) killEligible(
 	ctx context.Context,
 	state lifecycle.State,
 	live map[string]process.Process,
+	deferred map[string]bool,
 ) lifecycle.State {
 	for key, managed := range state.Processes {
+		if deferred[managed.TerminalSessionID] {
+			continue
+		}
 		proc, ok := live[key]
 		if !ok {
 			delete(state.Processes, key)
@@ -514,10 +565,14 @@ func (r *Runner) handleEligibleProcess(
 	proc process.Process,
 	reason string,
 ) lifecycle.State {
-	if r.skipProtected(proc, reason) {
+	protected, err := r.skipProtected(proc, reason)
+	if err != nil {
+		state.LastError = err.Error()
+	}
+	if protected {
 		return state
 	}
-	err := r.kill(ctx, proc, reason)
+	err = r.kill(ctx, proc, reason)
 	if err != nil {
 		state.LastError = err.Error()
 		return state
@@ -526,14 +581,13 @@ func (r *Runner) handleEligibleProcess(
 	return state
 }
 
-func (r *Runner) skipProtected(proc process.Process, reason string) bool {
+func (r *Runner) skipProtected(proc process.Process, reason string) (bool, error) {
 	if !r.cfg.IsProtected(proc.Name) {
-		return false
+		return false, nil
 	}
 	applied := false
 	reasons := []string{reason, "protected-process"}
-	r.recordDecision(proc, reasons, applied, "")
-	return true
+	return true, r.recordDecision(proc, reasons, applied, "")
 }
 
 func (r *Runner) killReason(
@@ -616,8 +670,8 @@ func (r *Runner) kill(ctx context.Context, proc process.Process, reason string) 
 		errorText = err.Error()
 	}
 	applied := true
-	r.recordDecision(proc, []string{reason}, applied, errorText)
-	return err
+	auditErr := r.recordDecision(proc, []string{reason}, applied, errorText)
+	return errors.Join(err, auditErr)
 }
 
 func (r *Runner) recordDecision(
@@ -625,9 +679,9 @@ func (r *Runner) recordDecision(
 	reasons []string,
 	applied bool,
 	errorText string,
-) {
+) error {
 	if r.audit == nil {
-		return
+		return nil
 	}
 	input := decisionAudit{
 		proc:      proc,
@@ -635,7 +689,10 @@ func (r *Runner) recordDecision(
 		applied:   applied,
 		errorText: errorText,
 	}
-	_ = r.audit.Record(auditEvent(input))
+	if err := r.audit.Record(auditEvent(input)); err != nil {
+		return fmt.Errorf("recording cleanup audit: %w", err)
+	}
+	return nil
 }
 
 type decisionAudit struct {
@@ -677,6 +734,15 @@ func daemonClock(now func() time.Time) func() time.Time {
 		return now
 	}
 	return time.Now
+}
+
+func daemonCreateTimeReader(
+	read func(context.Context, int32) (int64, error),
+) func(context.Context, int32) (int64, error) {
+	if read != nil {
+		return read
+	}
+	return process.CreateTime
 }
 
 func daemonStartedAt(startedAt time.Time) time.Time {
