@@ -44,6 +44,24 @@ func TestCheckKillsAfterGracePeriod(t *testing.T) {
 	}
 }
 
+func TestCheckGivesReusedPIDFreshGracePeriod(t *testing.T) {
+	cfg := applyConfig()
+	killer := &fakeKiller{}
+	monitor := testMonitorWithKiller(cfg, killer)
+	original := overCPUProcess()
+	lister := &fakeLister{procs: processes(original)}
+	monitor.lister = lister
+	monitor.check(t.Context())
+	monitor.offenses[original.PID].firstSeen = time.Now().Add(-2 * cfg.GracePeriod)
+	replacement := original
+	replacement.CreateTime++
+	lister.procs = processes(replacement)
+	monitor.check(t.Context())
+	if killer.called {
+		t.Fatal("replacement process must get its own grace period")
+	}
+}
+
 func TestCheckKillsDescendantsBeforeParent(t *testing.T) {
 	cfg := applyConfig()
 	cfg.GracePeriod = 0

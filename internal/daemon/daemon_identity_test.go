@@ -12,6 +12,120 @@ import (
 	"github.com/yowainwright/pk/internal/process"
 )
 
+func TestTickCleansUpChildAfterOmittedSnapshot(t *testing.T) {
+	store := newFakeStore(sessionStartEvent())
+	killer := &fakeKiller{}
+	runner := testRunner(store, killer)
+	createTime := childProcess().CreateTime
+	runner.readCreateTime = childIdentityReader(store, createTime, nil)
+	store.procs = []process.Process{shellProcess(), childProcess()}
+	assertTickSucceeds(t, runner)
+	store.procs = []process.Process{shellProcess()}
+	assertTickSucceeds(t, runner)
+	store.events = []lifecycle.Event{sessionStopEvent()}
+	store.procs = []process.Process{orphanedChildProcess()}
+	assertTickSucceeds(t, runner)
+	if !killer.killedPID(childProcess().PID) {
+		t.Fatal("expected tracked child cleanup after an omitted snapshot and session exit")
+	}
+}
+
+func TestTickDefersUnreadableChildWhileCleaningSibling(t *testing.T) {
+	t.Run("permission error", func(t *testing.T) {
+		createTime := childProcess().CreateTime
+		assertDeferredChildCleanup(t, createTime, os.ErrPermission)
+	})
+	t.Run("missing creation time", func(t *testing.T) {
+		assertDeferredChildCleanup(t, 0, nil)
+	})
+}
+
+func assertDeferredChildCleanup(t *testing.T, createTime int64, err error) {
+	t.Helper()
+	store := siblingTabStore()
+	store.events = append(store.events, windowStopEvent())
+	store.procs = siblingTabProcesses()[1:]
+	killer := &fakeKiller{}
+	runner := testRunner(store, killer)
+	runner.readCreateTime = childIdentityReader(store, createTime, err)
+	assertTickSucceeds(t, runner)
+	assertChildDeferred(t, store, killer)
+	store.procs = []process.Process{orphanedChildProcess()}
+	assertTickSucceeds(t, runner)
+	if !killer.killedPID(childProcess().PID) {
+		t.Fatal("expected deferred child cleanup after its metadata becomes readable")
+	}
+}
+
+func assertChildDeferred(t *testing.T, store *fakeStore, killer *fakeKiller) {
+	t.Helper()
+	_, tracked := store.state.Processes[childProcessKey()]
+	if !tracked {
+		t.Fatal("expected unreadable child to remain tracked")
+	}
+	if killer.killedPID(childProcess().PID) {
+		t.Fatal("unreadable child must not be killed")
+	}
+	if !killer.killedPID(siblingChildProcess().PID) {
+		t.Fatal("expected healthy sibling cleanup to continue")
+	}
+	if !strings.Contains(store.state.Daemon.LastError, childProcessKey()) {
+		t.Fatal("expected the unreadable child's identity in daemon diagnostics")
+	}
+}
+
+func TestTickRemovesConfirmedExitedChildren(t *testing.T) {
+	t.Run("gone", func(t *testing.T) {
+		assertMissingChildRemoved(t, 0, os.ErrNotExist)
+	})
+	t.Run("reused PID", func(t *testing.T) {
+		createTime := reusedChildProcess().CreateTime
+		assertMissingChildRemoved(t, createTime, nil)
+	})
+}
+
+func assertMissingChildRemoved(t *testing.T, createTime int64, err error) {
+	t.Helper()
+	store := newFakeStore(sessionStartEvent(), sessionStopEvent())
+	store.state.Processes[childProcessKey()] = managedChild()
+	killer := &fakeKiller{}
+	runner := testRunner(store, killer)
+	runner.readCreateTime = childIdentityReader(store, createTime, err)
+	assertTickSucceeds(t, runner)
+	if len(store.state.Processes) != 0 {
+		t.Fatal("expected confirmed exited child to be removed from tracking")
+	}
+	if killer.called {
+		t.Fatal("confirmed exited child must not be signaled")
+	}
+}
+
+func childIdentityReader(
+	store *fakeStore,
+	createTime int64,
+	err error,
+) func(context.Context, int32) (int64, error) {
+	return func(ctx context.Context, pid int32) (int64, error) {
+		if pid == childProcess().PID {
+			return createTime, err
+		}
+		return store.readCreateTime(ctx, pid)
+	}
+}
+
+func orphanedChildProcess() process.Process {
+	child := childProcess()
+	child.ParentPID = 1
+	return child
+}
+
+func assertTickSucceeds(t *testing.T, runner *Runner) {
+	t.Helper()
+	if err := runner.Tick(t.Context()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+}
+
 func TestTickDefersUnreadableSessionWhileCleaningSibling(t *testing.T) {
 	store := unreadableShellStore(siblingSessionStartEvent(), windowStopEvent())
 	store.procs = siblingTabProcesses()

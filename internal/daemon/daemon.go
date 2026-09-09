@@ -428,7 +428,7 @@ func (r *Runner) reconcileSession(
 		state.Sessions[session.ID] = session
 		return state, nil
 	}
-	exists, err := r.sessionExists(ctx, session.ShellProcessKey, live)
+	exists, err := r.processExists(ctx, session.ShellProcessKey, live)
 	if err != nil {
 		return state, fmt.Errorf("checking session %s: %w", session.ID, err)
 	}
@@ -439,7 +439,7 @@ func (r *Runner) reconcileSession(
 	return trackDescendants(state, session.ID, session.ShellProcessKey.PID, procs, r.now()), nil
 }
 
-func (r *Runner) sessionExists(
+func (r *Runner) processExists(
 	ctx context.Context,
 	key lifecycle.ProcessKey,
 	live map[string]process.Process,
@@ -455,7 +455,7 @@ func (r *Runner) sessionExists(
 		return false, err
 	}
 	if createTime <= 0 {
-		return false, fmt.Errorf("shell %d has no creation time", key.PID)
+		return false, fmt.Errorf("process %d has no creation time", key.PID)
 	}
 	return createTime == key.CreateTime, nil
 }
@@ -534,10 +534,27 @@ func (r *Runner) killEligible(
 		}
 		proc, ok := live[key]
 		if !ok {
-			delete(state.Processes, key)
+			state = r.pruneMissingProcess(ctx, state, managed.ProcessKey)
 			continue
 		}
 		state = r.killIfEligible(ctx, state, key, managed, proc)
+	}
+	return state
+}
+
+func (r *Runner) pruneMissingProcess(
+	ctx context.Context,
+	state lifecycle.State,
+	key lifecycle.ProcessKey,
+) lifecycle.State {
+	exists, err := r.processExists(ctx, key, nil)
+	if err != nil {
+		state.LastError = fmt.Sprintf("checking managed process %s: %v", key.String(), err)
+		state.Daemon.LastError = state.LastError
+		return state
+	}
+	if !exists {
+		delete(state.Processes, key.String())
 	}
 	return state
 }
