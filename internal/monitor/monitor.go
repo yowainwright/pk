@@ -148,8 +148,9 @@ func (m *Monitor) killDescendants(
 }
 
 func (m *Monitor) recordNewOffense(p process.Process) bool {
-	_, exists := m.offenses[p.PID]
-	if exists {
+	previous, exists := m.offenses[p.PID]
+	sameProcess := exists && previous.proc.CreateTime == p.CreateTime
+	if sameProcess {
 		return false
 	}
 	m.recordOffense(p)
