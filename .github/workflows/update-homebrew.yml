@@ -1,14 +1,10 @@
-name: Update Homebrew Cask
+name: Update Homebrew Formula
 
 on:
   workflow_call:
     inputs:
       tag_name:
         description: Published stable release tag
-        required: true
-        type: string
-      artifact_name:
-        description: Generated cask artifact from the caller
         required: true
         type: string
     secrets:
@@ -28,111 +24,123 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  update-cask:
+  update-formula:
     runs-on: macos-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
-      actions: read
       contents: read
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
     steps:
       - name: Validate stable tag
         env:
           TAG_NAME: ${{ inputs.tag_name }}
-        run: |
-          pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
-          if [[ ! "$TAG_NAME" =~ $pattern ]]; then
-            echo "tag_name must be a stable v-prefixed semantic version" >&2
-            exit 1
-          fi
-
-      - name: Download cask from caller
-        if: ${{ inputs.artifact_name != '' }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: ${{ inputs.artifact_name }}
-          path: generated
-
-      - name: Find release artifact
-        if: ${{ inputs.artifact_name == '' }}
-        env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ inputs.tag_name }}
         run: |
-          artifact_name="homebrew-pk-$TAG_NAME"
-          endpoint="repos/$GITHUB_REPOSITORY/actions/artifacts"
-          query='.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .id'
-          artifact_id="$(gh api --method GET "$endpoint" -f name="$artifact_name" --jq "$query")"
-          if [[ -z "$artifact_id" || "$artifact_id" == "null" ]]; then
-            echo "No retained cask artifact found for $TAG_NAME" >&2
+          pattern='^v0\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if [[ ! "$TAG_NAME" =~ $pattern ]]; then
+            echo "tag_name must be a stable v0 semantic version" >&2
             exit 1
           fi
-          gh api "$endpoint/$artifact_id/zip" > artifact.zip
-          mkdir generated
-          unzip -q artifact.zip -d generated
+          published="$(gh release view "$TAG_NAME" --repo yowainwright/pk \
+            --json isDraft,isPrerelease --jq '(.isDraft == false) and (.isPrerelease == false)')"
+          test "$published" = "true"
 
-      - name: Verify generated cask
-        env:
-          TAG_NAME: ${{ inputs.tag_name }}
-        run: |
-          cask_file="generated/pk.rb"
-          version="${TAG_NAME#v}"
-          test -s "$cask_file"
-          ruby -c "$cask_file"
-          grep -Fq "version \"$version\"" "$cask_file"
-          grep -Fq '/releases/download/v#{version}/' "$cask_file"
-
-      - name: Verify tap credentials
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          can_push="$(gh api repos/yowainwright/homebrew-tap --jq '.permissions.push')"
-          if [[ "$can_push" != "true" ]]; then
-            echo "HOMEBREW_TAP_TOKEN cannot update yowainwright/homebrew-tap" >&2
-            exit 1
-          fi
-
-      - name: Install released cask
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: "1"
-          TAG_NAME: ${{ inputs.tag_name }}
-        run: |
-          tap_repo="$RUNNER_TEMP/pk-release-tap"
-          mkdir -p "$tap_repo/Casks"
-          cp generated/pk.rb "$tap_repo/Casks/pk.rb"
-          git -C "$tap_repo" init --quiet
-          git -C "$tap_repo" add Casks/pk.rb
-          git -C "$tap_repo" -c user.name=Homebrew -c user.email=brew@localhost \
-            commit --quiet -m "test: verify released cask"
-          brew tap pk-release/verify "file://$tap_repo"
-          brew install --cask pk-release/verify/pk
-          test "$(pk --version)" = "pk $TAG_NAME"
-          brew uninstall --cask pk
-          brew untap pk-release/verify
+      - name: Checkout release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ inputs.tag_name }}
+          persist-credentials: false
 
       - name: Checkout Homebrew tap
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           repository: yowainwright/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          ref: main
           path: tap
+          persist-credentials: false
 
-      - name: Update cask
+      - name: Set up tap Ruby
         run: |
-          mkdir -p tap/Casks
-          cp generated/pk.rb tap/Casks/pk.rb
-          git -C tap rm --ignore-unmatch Formula/pk.rb
-          ruby -c tap/Casks/pk.rb
+          brew list ruby >/dev/null 2>&1 || brew install ruby
+          echo "$(brew --prefix ruby)/bin" >> "$GITHUB_PATH"
 
-      - name: Commit and push
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+
+      - name: Download and verify released binaries
+        env:
+          TAG_NAME: ${{ inputs.tag_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "$TAG_NAME" --repo yowainwright/pk --dir assets \
+            --pattern 'pk-*' --pattern 'SHA256SUMS*'
+          sh scripts/verify-checksum-signature.sh assets
+          sh scripts/verify-release-assets.sh assets
+          case "$(uname -m)" in
+            arm64) binary=assets/pk-darwin-arm64 ;;
+            x86_64) binary=assets/pk-darwin-amd64 ;;
+            *) echo "unsupported runner architecture" >&2; exit 1 ;;
+          esac
+          chmod +x "$binary"
+          test "$("$binary" --version)" = "pk $TAG_NAME"
+
+      - name: Generate formula with tap tooling
+        working-directory: tap
         env:
           TAG_NAME: ${{ inputs.tag_name }}
         run: |
           version="${TAG_NAME#v}"
-          git -C tap config user.name "github-actions[bot]"
-          git -C tap config user.email "github-actions[bot]@users.noreply.github.com"
-          git -C tap add Casks/pk.rb
-          if git -C tap diff --cached --quiet; then
-            exit 0
-          fi
-          git -C tap commit -m "Update pk to $version"
-          git -C tap push
+          jq --arg version "$version" '.version = $version | .managed = true' \
+            brews/pk.json > brews/pk.json.tmp
+          mv brews/pk.json.tmp brews/pk.json
+          scripts/update-formula pk "$version"
+
+      - name: Check formula against signed checksums
+        env:
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: sh scripts/verify-homebrew-formula.sh tap/Formula/pk.rb "$TAG_NAME" assets
+
+      - name: Install and test released formula
+        env:
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          brew tap yowainwright/tap "$GITHUB_WORKSPACE/tap"
+          install -m 644 tap/Formula/pk.rb "$(brew --repository yowainwright/tap)/Formula/pk.rb"
+          brew style tap/Formula/pk.rb
+          brew install --formula yowainwright/tap/pk
+          brew test yowainwright/tap/pk
+          brew audit --strict yowainwright/tap/pk
+          test "$(pk --version)" = "pk $TAG_NAME"
+
+      - name: Open formula pull request
+        id: formula-pr
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+          branch: pk-${{ inputs.tag_name }}
+          base: main
+          add-paths: |
+            Formula/pk.rb
+            brews/pk.json
+          commit-message: "Update pk to ${{ inputs.tag_name }}"
+          title: "pk ${{ inputs.tag_name }}"
+          body: |
+            Install pk from the published ${{ inputs.tag_name }} binaries using the tap's shared formula template.
+
+            Verified all four binaries against the signed checksums and checked the installed macOS binary's version. Formula style, installation, test, and strict audit passed.
+
+            Release: https://github.com/yowainwright/pk/releases/tag/${{ inputs.tag_name }}
+
+      - name: Enable auto-merge after required checks
+        if: ${{ steps.formula-pr.outputs.pull-request-number != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          PR_NUMBER: ${{ steps.formula-pr.outputs.pull-request-number }}
+          PR_HEAD: ${{ steps.formula-pr.outputs.pull-request-head-sha }}
+        run: |
+          gh pr merge "$PR_NUMBER" --repo yowainwright/homebrew-tap \
+            --auto --squash --match-head-commit "$PR_HEAD"

@@ -12,35 +12,46 @@ func TestGoReleaserCreatesDraft(t *testing.T) {
 	assertContains(t, config, "draft: true")
 	assertContains(t, config, "mode: keep-existing")
 	assertContains(t, config, "artifacts: checksum")
-	assertContains(t, config, "homebrew_casks:")
-	assertContains(t, config, "skip_upload: true")
+	assertMissing(t, config, "homebrew_casks:")
 }
 
 func TestPublisherValidatesBeforePublication(t *testing.T) {
 	workflow := readRepoFile(t, ".github/workflows/release.yml")
 	assertContains(t, workflow, "group: publish-release-${{ inputs.tag_name }}")
 	assertContains(t, workflow, "cancel-in-progress: false")
-	assertContains(t, workflow, "needs: [preflight, homebrew-cask]")
+	assertContains(t, workflow, "needs: preflight")
 	assertContains(t, workflow, "sh scripts/verify-checksum-signature.sh assets")
 	assertContains(t, workflow, "needs: build")
 	assertContains(t, workflow, "gh release edit \"$TAG_NAME\" --draft=false")
 	assertContains(t, workflow, "needs: publish")
-	assertContains(t, workflow, "needs: [publish, update-homebrew]")
-	assertContains(t, workflow, "needs.update-homebrew.result == 'failure'")
-	assertContains(t, workflow, "gh release edit \"$TAG_NAME\" --draft=true")
+	assertMissing(t, workflow, "restore-draft:")
+	assertMissing(t, workflow, "gh release edit \"$TAG_NAME\" --draft=true")
 }
 
-func TestStableReleaseUpdatesGeneratedCask(t *testing.T) {
+func TestStableReleaseOpensFormulaPR(t *testing.T) {
 	release := readRepoFile(t, ".github/workflows/release.yml")
 	homebrew := readRepoFile(t, ".github/workflows/update-homebrew.yml")
 	assertContains(t, release, "if: ${{ !contains(inputs.tag_name, '-') }}")
-	assertContains(t, homebrew, "actions/download-artifact@")
-	assertContains(t, homebrew, "cp generated/pk.rb tap/Casks/pk.rb")
-	assertContains(t, homebrew, "git -C tap rm --ignore-unmatch Formula/pk.rb")
-	assertContains(t, homebrew, "brew tap pk-release/verify")
-	assertContains(t, homebrew, "brew install --cask pk-release/verify/pk")
+	assertContains(t, homebrew, `scripts/update-formula pk "$version"`)
+	assertContains(t, homebrew, "peter-evans/create-pull-request@")
+	assertContains(t, homebrew, "--auto --squash --match-head-commit")
+	assertMissing(t, homebrew, "Casks/pk.rb")
+	assertMissing(t, homebrew, "git push")
 	assertMissing(t, homebrew, "cat > Formula/pk.rb")
-	assertMissing(t, homebrew, `brew install --cask "$PWD/generated/pk.rb"`)
+}
+
+func TestFormulaPRRequiresVerifiedInstall(t *testing.T) {
+	homebrew := readRepoFile(t, ".github/workflows/update-homebrew.yml")
+	assertContains(t, homebrew, "sh scripts/verify-checksum-signature.sh assets")
+	assertContains(t, homebrew, "sh scripts/verify-release-assets.sh assets")
+	assertContains(t, homebrew, "sh scripts/verify-homebrew-formula.sh tap/Formula/pk.rb")
+	assertContains(
+		t, homebrew,
+		`install -m 644 tap/Formula/pk.rb "$(brew --repository yowainwright/tap)/Formula/pk.rb"`,
+	)
+	assertContains(t, homebrew, "brew install --formula yowainwright/tap/pk")
+	assertContains(t, homebrew, "brew test yowainwright/tap/pk")
+	assertContains(t, homebrew, "brew audit --strict yowainwright/tap/pk")
 }
 
 func TestCIExercisesReleaseAndSecurityPaths(t *testing.T) {
@@ -95,12 +106,12 @@ func TestBugReportSupportsPreDoctorReleases(t *testing.T) {
 	assertContains(t, template, "Architecture: arm64 or amd64")
 }
 
-func TestCaskVerificationIsShared(t *testing.T) {
+func TestAssetVerificationIsShared(t *testing.T) {
 	ci := readRepoFile(t, ".github/workflows/ci.yml")
 	release := readRepoFile(t, ".github/workflows/release.yml")
 	mise := readRepoFile(t, ".mise.toml")
-	verifier := readRepoFile(t, "scripts/verify-homebrew-cask.sh")
-	command := "sh scripts/verify-homebrew-cask.sh"
+	verifier := readRepoFile(t, "scripts/verify-release-assets.sh")
+	command := "sh scripts/verify-release-assets.sh"
 	assertContains(t, ci, command)
 	assertContains(t, release, command)
 	assertContains(t, mise, command)
