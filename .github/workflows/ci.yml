@@ -165,5 +165,5 @@ jobs:
           version: v2.17.0
           args: release --snapshot --clean --skip=sign
 
-      - name: Verify generated cask
-        run: sh scripts/verify-homebrew-cask.sh
+      - name: Verify release assets
+        run: sh scripts/verify-release-assets.sh

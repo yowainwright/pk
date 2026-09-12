@@ -105,40 +105,11 @@ jobs:
           args: release --snapshot --clean --skip=sign
 
       - name: Verify snapshot
-        run: sh scripts/verify-homebrew-cask.sh
-
-  homebrew-cask:
-    name: Homebrew Cask Smoke Test
-    needs: preflight
-    runs-on: macos-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout release tag
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          fetch-depth: 0
-          ref: ${{ inputs.tag_name }}
-
-      - name: Set up Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
-        with:
-          go-version: "1.26.5"
-          cache: true
-
-      - name: Build release snapshot
-        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94
-        with:
-          version: v2.17.0
-          args: release --snapshot --clean --skip=sign
-
-      - name: Install generated cask
-        run: sh tests/scripts/homebrew_cask_test.sh
+        run: sh scripts/verify-release-assets.sh
 
   build:
     name: Build Signed Assets
-    needs: [preflight, homebrew-cask]
+    needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -167,15 +138,6 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Save generated Homebrew cask
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: homebrew-pk-${{ inputs.tag_name }}
-          path: dist/homebrew/Casks/pk.rb
-          if-no-files-found: error
-          overwrite: true
-          retention-days: 30
 
   publish:
     name: Verify and Publish Draft
@@ -208,14 +170,8 @@ jobs:
         run: |
           is_draft="$(gh release view "$TAG_NAME" --json isDraft --jq .isDraft)"
           test "$is_draft" = "true"
-          test -s assets/pk-darwin-amd64
-          test -s assets/pk-darwin-arm64
-          test -s assets/pk-linux-amd64
-          test -s assets/pk-linux-arm64
-          test -s assets/SHA256SUMS
           test -s assets/SHA256SUMS.bundle
-          cd assets
-          sha256sum --check SHA256SUMS
+          sh scripts/verify-release-assets.sh assets
 
       - name: Verify checksum signature
         run: sh scripts/verify-checksum-signature.sh assets
@@ -232,36 +188,13 @@ jobs:
           fi
 
   update-homebrew:
-    name: Update Homebrew
+    name: Open Homebrew Formula PR
     if: ${{ !contains(inputs.tag_name, '-') }}
     needs: publish
     permissions:
-      actions: read
       contents: read
     uses: ./.github/workflows/update-homebrew.yml
     with:
       tag_name: ${{ inputs.tag_name }}
-      artifact_name: homebrew-pk-${{ inputs.tag_name }}
     secrets:
       HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-
-  restore-draft:
-    name: Restore Draft After Homebrew Failure
-    if: >-
-      ${{
-        always() &&
-        needs.publish.result == 'success' &&
-        needs.update-homebrew.result == 'failure'
-      }}
-    needs: [publish, update-homebrew]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    steps:
-      - name: Restore draft release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          TAG_NAME: ${{ inputs.tag_name }}
-        run: gh release edit "$TAG_NAME" --draft=true --latest=false
