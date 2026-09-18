@@ -1,4 +1,4 @@
-# pk
+# pk C|=>
 
 [![GitHub release](https://img.shields.io/github/v/release/yowainwright/pk?sort=semver)](https://github.com/yowainwright/pk/releases)
 [![CI](https://github.com/yowainwright/pk/actions/workflows/ci.yml/badge.svg)](https://github.com/yowainwright/pk/actions/workflows/ci.yml)
@@ -8,7 +8,7 @@
 **pk**. process killer. tracks processes in zsh sessions and kills
 unprotected leftovers when tracked sessions end.
 
-This can provide signicant benefit during agentic coding where, for any number of reasons, processes can be abondoned. 
+This can provide significant benefit during agentic coding where, for any number of reasons, processes can be abandoned.
 
 ## Quick start
 
@@ -36,7 +36,9 @@ Step 3. Open a new zsh tab.
 **Open a new zsh tab after installation.** Tabs that were already open will not
 have loaded the hook. Start dev servers and other tools in the new tab.
 
-Background cleanup uses interactive zsh on macOS. See the [service setup](internal/service) and [shell hook](internal/shell/pk.zsh).
+Background cleanup runs through launchd on macOS or user systemd on Linux.
+Session tracking uses the [interactive zsh hook](internal/shell/pk.zsh).
+See the [service setup](internal/service).
 
 ## Install
 
@@ -58,13 +60,13 @@ pk install --apply
 <!-- session tracking derived from internal/shell/pk.zsh and internal/daemon/daemon.go -->
 
 Coding agents often start dev servers, test watchers, and other processes that
-outlive the work they were started for. This can take up processing power on your computer. Finding and stopping background process can really help and pk makes it thoughtless with a simple, hopefully thoughtful api. Feedback welcome! 
+outlive the work they were started for. This can take up processing power on your computer. Finding and stopping background processes can really help and pk makes it thoughtless with a simple, hopefully thoughtful api. Feedback welcome!
 
 ```text
 Open a zsh tab → run your tools → close the tab → pk cleans up leftovers
 ```
 
-Once applied via `pk install --apply` pk runs quietly in the background. 
+Once applied via `pk install --apply` pk runs quietly in the background.
 You can check what it is tracking with
 `pk obs` and read cleanup records with `pk history`.
 
@@ -223,7 +225,7 @@ Use [doctor](#pk-doctor) for a shorter report or [obs](#pk-obs) for tracking cou
 and any recorded decision or error.
 
 A recent `last tick` shows the daemon is running. An idle shell can have zero
-active sessions while its processes remain tracked. 
+active sessions while its processes remain tracked.
 
 Try the [dev-server recipe](#check-cleanup-with-a-dev-server) to check cleanup.
 
@@ -249,7 +251,7 @@ The report leaves out paths, commands, process details, and audit contents.
 
 ### `pk help`
 
-`pk help` shows the command list, or a usage summary for one command. 
+`pk help` shows the command list, or a usage summary for one command.
 Running `pk` with no arguments also shows the command list.
 
 ```sh
