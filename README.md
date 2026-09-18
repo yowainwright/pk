@@ -5,34 +5,46 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/yowainwright/pk/badge)](https://scorecard.dev/viewer/?uri=github.com/yowainwright/pk)
 [![codecov](https://codecov.io/gh/yowainwright/pk/branch/main/graph/badge.svg)](https://codecov.io/gh/yowainwright/pk)
 
-**pk** (process killer) tracks processes in your zsh sessions and stops
-unprotected leftovers when those sessions end.
+**pk**. process killer. tracks processes in zsh sessions and kills
+unprotected leftovers when tracked sessions end.
 
-[Quick start](#quick-start) · [Why pk exists](#why-pk-exists) ·
-[How cleanup works](#how-cleanup-works) · [Check on it](#check-on-it) ·
-[Common commands](#common-commands) · [Uninstall](#uninstall) ·
-[Contributing](#contributing)
+This can provide signicant benefit during agentic coding where, for any number of reasons, processes can be abondoned. 
 
 ## Quick start
 
 <!-- install commands derived from go.mod, .github/workflows/update-homebrew.yml, cmd/pk/main.go, internal/service/service.go, and internal/shell/shell.go -->
 
-Install pk with Homebrew, then enable background cleanup:
+Install pk with Homebrew, then enable background cleanup.
 
+Step 1. Install pk.
 ```sh
 brew install yowainwright/tap/pk
+```
+
+Step 2. apply it.
+```sh
 pk install --apply
 ```
+
+Step 3. Open a new zsh tab.
+
+## What's going on under the hood?
 
 `pk install --apply` starts the background service and adds a hook to your
 `.zshrc`. The `--apply` flag allows pk to stop tracked processes automatically.
 
-**Open a new zsh tab after installation.** Tabs that were already open may not
-have loaded the hook. Start your dev servers and other tools in the new tab.
+**Open a new zsh tab after installation.** Tabs that were already open will not
+have loaded the hook. Start dev servers and other tools in the new tab.
 
-Background cleanup uses interactive zsh on macOS or Linux. Linux requires a
-user systemd service. The cleanup walkthrough below has been tested on macOS.
-See the [service setup](internal/service) and [shell hook](internal/shell/pk.zsh).
+Background cleanup uses interactive zsh on macOS. See the [service setup](internal/service) and [shell hook](internal/shell/pk.zsh).
+
+## Install
+
+Homebrew is the preferred method:
+
+```sh
+brew install yowainwright/tap/pk
+```
 
 To install from a checkout of this repository instead of Homebrew:
 
@@ -46,17 +58,14 @@ pk install --apply
 <!-- session tracking derived from internal/shell/pk.zsh and internal/daemon/daemon.go -->
 
 Coding agents often start dev servers, test watchers, and other processes that
-outlive the work they were started for. Finding and stopping them by hand gets
-old.
-
-pk keeps track of those processes while you work. When their shell session ends,
-it stops the tracked leftovers:
+outlive the work they were started for. This can take up processing power on your computer. Finding and stopping background process can really help and pk makes it thoughtless with a simple, hopefully thoughtful api. Feedback welcome! 
 
 ```text
 Open a zsh tab → run your tools → close the tab → pk cleans up leftovers
 ```
 
-It runs quietly in the background. You can check what it is tracking with
+Once applied via `pk install --apply` pk runs quietly in the background. 
+You can check what it is tracking with
 `pk obs` and read cleanup records with `pk history`.
 
 ## How cleanup works
@@ -65,12 +74,12 @@ It runs quietly in the background. You can check what it is tracking with
 
 The background service checks each session's child processes every three seconds.
 
-| What you do | What pk does |
-| --- | --- |
-| Leave a shell open at an idle prompt | Keeps its processes running |
-| Close a tracked shell or its terminal tab | Stops its tracked, unprotected leftovers |
-| Exit Codex but leave the shell open | Keeps tracking the shell; exiting Codex alone does not end it |
-| Work in an older shell without the hook | Cannot track that shell's session |
+While the shell stays open, pk leaves its processes running, even at an idle
+prompt. Closing the shell or its terminal tab lets pk clean up tracked leftovers.
+Exiting Codex alone leaves the shell session open.
+
+A shell needs the zsh hook to participate. Open a fresh tab after installation;
+an older shell without the hook is outside pk's session tracking.
 
 pk checks both the process ID and creation time before sending a signal. It
 sends `SIGTERM`, waits up to two seconds, then uses `SIGKILL` if needed. If it
@@ -89,17 +98,9 @@ integration; the bundled hook reports zsh session events. See the
 
 <!-- observability commands and history output derived from cmd/pk/main.go, internal/diagnostics/diagnostics.go, and internal/audit/audit.go -->
 
-```sh
-pk doctor
-pk obs
-pk history
-```
-
-| Command | What to look for |
-| --- | --- |
-| `pk doctor` | A running background service and a readable audit log |
-| `pk obs` | A recent `last tick`, tracked process counts, and any `last error` |
-| `pk history` | Cleanup records with process IDs, reasons, and results |
+Start with `pk doctor`: look for a running service and a readable audit log.
+Then use `pk obs` to check the last tick and tracked process count. `pk history`
+shows cleanup records with process IDs, reasons, and results.
 
 An idle prompt does not count as an active session. Zero managed processes can
 be normal. A recent heartbeat tells you the daemon is running; history tells
@@ -109,7 +110,360 @@ History can be empty if nothing needed stopping. In v0.1.0, `pk history` may
 print only "Loading cleanup history" and return to the prompt when there are
 no records.
 
-### Try it with a dev server
+Try the [dev-server recipe](#check-cleanup-with-a-dev-server) to check cleanup
+with a process you recognize.
+
+For a bug report, include `pk doctor` output. It leaves out paths, commands,
+process details, and audit contents. See [Support](.github/SUPPORT.md).
+
+## Commands
+
+<!-- public CLI commands and aliases derived from cmd/pk/usage.go and cmd/pk/main.go; behavior from internal/scan, internal/cleanup, internal/monitor, internal/service, internal/audit, and internal/diagnostics -->
+
+Run `pk <command> [options]`. `scan`, `cleanup`, and `monitor` work without
+installing the background service. `scan` always previews; `cleanup` and
+`monitor` need `--apply` to stop anything.
+
+[scan](#pk-scan) · [cleanup](#pk-cleanup) · [monitor](#pk-monitor) ·
+[install](#pk-install) · [uninstall](#pk-uninstall) · [status](#pk-status) ·
+[obs](#pk-obs) · [history](#pk-history) · [doctor](#pk-doctor) ·
+[version](#pk-version) · [help](#pk-help)
+
+### pk scan
+
+Inspect matching processes, including their PIDs, proposed actions, confidence,
+and reasons. A `kill` action in this output is a proposal; scanning never sends
+signals.
+
+```sh
+pk scan
+pk scan --cpu 90 --mem 4096
+```
+
+The [scanner](internal/scan/scan.go) considers process names, ancestry, working
+directories, and resource use. This is a broader process scan than the session
+counts shown by `pk obs`.
+
+### pk cleanup
+
+Preview processes and local Docker containers selected for cleanup. Add
+`--apply` to stop the selected targets and their unprotected process descendants.
+Cleanup records both previews and applied results in [history](#pk-history).
+
+```sh
+pk cleanup --scope processes
+pk cleanup --scope processes --apply
+```
+
+The default scope is `all`, which includes containers. Process cleanup uses the
+scanner's high-confidence targets; it can select processes in open sessions.
+Container cleanup considers Compose and devcontainer labels. A container with
+`pk.protected=true` is skipped. See the [process](internal/cleanup/cleanup.go)
+and [container](internal/docker/reports.go) selection rules.
+
+### pk monitor
+
+Watch process CPU and memory use in the foreground. By default, pk logs what it
+would stop. With `--apply`, it stops an unprotected process and its unprotected
+descendants after the process stays above either threshold for the grace period.
+
+```sh
+pk monitor --cpu 90 --mem 4096 --grace 1m
+pk monitor --cpu 90 --mem 4096 --grace 1m --apply
+```
+
+Press Ctrl-C to stop monitoring. This command uses resource thresholds across
+visible processes, independently of whether their terminal sessions have ended.
+The [monitor](internal/monitor/monitor.go) writes its results to terminal logs;
+it does not currently add them to `pk history`.
+
+### pk install
+
+Install and start the background service for the current user, then add the zsh
+hook. `--apply` is required because the service can stop tracked leftovers.
+
+```sh
+pk install --apply
+```
+
+Open a fresh zsh tab afterward. The [installer](internal/service) uses launchd
+on macOS and a user systemd service on Linux. It accepts `--apply`; the options
+for `monitor` and `cleanup` do not configure the installed service.
+
+### pk uninstall
+
+Stop and remove the background service and remove the shell hook. Open a fresh
+shell afterward. The executable and stored history remain.
+
+```sh
+pk uninstall
+```
+
+To also remove an installation made through Homebrew:
+
+```sh
+brew uninstall yowainwright/tap/pk
+```
+
+See the [service removal](internal/service/service.go) and
+[shell-hook removal](internal/shell/shell.go).
+
+## pk api args
+
+### `pk status`
+
+`pk status` Show the operating system's status for the installed background service. On
+macOS, this includes the launchd service details.
+
+Use [doctor](#pk-doctor) for a shorter report or [obs](#pk-obs) for tracking counts.
+
+### `pk obs`
+
+`pk obs` shows service status, session counts, tracked processes, the last daemon tick,
+and any recorded decision or error.
+
+A recent `last tick` shows the daemon is running. An idle shell can have zero
+active sessions while its processes remain tracked. 
+
+Try the [dev-server recipe](#check-cleanup-with-a-dev-server) to check cleanup.
+
+### `pk history`
+
+Print the retained cleanup records as JSON lines. Each record includes the
+action, target, reasons, and whether cleanup was applied. Errors appear in an
+`error` field when present.
+
+The log includes daemon actions and manual `cleanup` previews and actions.
+`"applied":false` means a preview or skipped action. `"applied":true` means
+cleanup was attempted; check the `error` field for failures. An empty log has no
+records to print. See the [audit record format](internal/audit/audit.go).
+
+### `pk doctor`
+
+`pk doctor` prints the installed version of pk, platform, service status, Docker CLI availability, and whether the audit log is readable.
+The report leaves out paths, commands, process details, and audit contents.
+
+### `pk version`
+
+`pk version` prints the version of the executable you are running. `--version` is an alias.
+
+### `pk help`
+
+`pk help` shows the command list, or a usage summary for one command. 
+Running `pk` with no arguments also shows the command list.
+
+```sh
+pk help
+pk help cleanup
+```
+
+## pk api opts
+
+<!-- public options, defaults, and parsing derived from internal/config/config.go, cmd/pk/main.go, cmd/pk/usage.go, and internal/dx/ui.go; option effects from internal/scan/scan.go, internal/monitor/monitor.go, and internal/daemon/daemon.go -->
+
+Put command options after the command name. `--color` can go before or after it.
+These options apply to the command you run; they do not change the configuration
+of an already running background service.
+
+[--apply](#--apply) · [--scope](#--scope) · [--watch](#--watch) ·
+[--cpu](#--cpu) · [--mem](#--mem) · [--interval](#--interval) ·
+[--grace](#--grace) · [--protected](#--protected) · [--stale](#--stale) ·
+[--color](#--color) · [--help / -h](#--help--h) · [--version](#--version)
+
+### `--apply`
+
+Allow `cleanup` or `monitor` to stop selected targets. Both commands default to
+preview mode. `install` requires this flag to enable background cleanup.
+
+examples
+```sh
+pk cleanup --scope processes --apply
+pk monitor --apply
+pk install --apply
+```
+
+`scan` does not accept `--apply`. See the [command parsers](cmd/pk/main.go).
+
+### `--scope`
+
+Choose what `cleanup` considers. The default is `all`.
+
+Use `processes` to leave containers alone, or `containers` to check only local
+Docker containers. `all` checks both.
+
+example
+```sh
+pk cleanup --scope containers
+```
+
+This remains a preview until you add `--apply`. If Docker is unavailable,
+[cleanup skips the container check](cmd/pk/main.go).
+
+### `--watch`
+
+Repeat `cleanup` until you press Ctrl-C. It runs once immediately, then repeats
+at `--interval`. The default is off.
+
+example
+```sh
+pk cleanup --scope processes --watch --interval 5s
+```
+
+Add `--apply` to act on each pass. `monitor` already runs continuously and does
+not accept `--watch`. See the [cleanup loop](cmd/pk/main.go).
+
+### `--cpu`
+
+Set the CPU percentage threshold for `scan`, process `cleanup`, and `monitor`.
+The default is `80`.
+
+example
+```sh
+pk monitor --cpu 90
+```
+
+In `monitor`, a reading above the threshold starts the grace period. In `scan`
+and `cleanup`, it adds a `high-cpu` reason; that reason alone does not make a
+process a cleanup target. See the [selection rules](internal/scan/scan.go).
+
+### `--mem`
+
+Set the resident-memory threshold for `scan`, process `cleanup`, and `monitor`.
+The default is `8192`. Values use MiB (1,048,576 bytes), labeled MB in the CLI.
+
+example
+```sh
+pk monitor --mem 4096
+```
+
+In `monitor`, exceeding either `--cpu` or `--mem` starts the grace period. In
+`scan` and `cleanup`, exceeding this threshold adds a `high-memory` reason;
+other evidence is needed to select the process for cleanup. See
+[memory measurement](internal/process/process.go) and
+[threshold handling](internal/monitor/monitor.go).
+
+### `--interval`
+
+Set the time between checks for `monitor` or `cleanup --watch`. The default is
+`3s`; the value must be greater than zero. Durations can use units such as `ms`,
+`s`, or `m`.
+
+example
+```sh
+pk monitor --interval 5s
+```
+
+The [shared parser](internal/config/config.go) also accepts this option on
+`scan` and a single `cleanup` run, where it has no effect on scheduling.
+
+### `--grace`
+
+Set how long a process must stay above a resource threshold before `monitor`
+acts. The default is `30s`. Zero is allowed; negative durations are rejected.
+
+example
+```sh
+pk monitor --cpu 90 --grace 1m
+```
+
+A reading at or below both thresholds resets the timer. Without `--apply`, the
+monitor only reports what it would stop. `scan` and `cleanup` accept this option
+through the shared parser but do not use it. See the
+[monitor](internal/monitor/monitor.go).
+
+### `--protected`
+
+Add a comma-separated list of process names to the built-in protected list for
+`scan`, process `cleanup`, or `monitor`. Names must match exactly, including
+case. Extra names are added to the defaults, not substituted for them.
+
+example
+```sh
+pk cleanup --scope processes --protected postgres,redis-server
+```
+
+This protects the named processes, not their entire descendant trees. It does
+not set Docker container protection or update the installed daemon. See the
+[default list and matching rules](internal/config/config.go).
+
+### `--stale`
+
+Set the age at which an inactive, explicitly identified agent session becomes
+eligible for cleanup. The default is `0`, which disables this behavior. A value
+such as `--stale 10m` means ten minutes; negative durations are rejected.
+
+Only the internal `__daemon` command uses this setting. The shared parser
+accepts it on `scan`, `cleanup`, and `monitor`, but it has no effect there.
+`pk install` does not accept it, so the installed service keeps the default.
+The bundled zsh hook does not identify agent sessions unless configured by an
+integration. See the [daemon's stale-session rules](internal/daemon/daemon.go).
+
+### `--color`
+
+Choose `auto`, `always`, or `never`. The default is `auto`, which enables color
+for a suitable terminal and respects `NO_COLOR` and CI detection.
+
+examples
+```sh
+pk --color never scan
+pk scan --color=always
+```
+
+### `--help, -h`
+
+Show help for the command, then exit without running it.
+
+examples
+```sh
+pk cleanup --help
+pk monitor -h
+```
+
+Use `pk --help` for the command list. These flags use the same
+[help text](cmd/pk/usage.go) as `pk help`.
+
+### `--version`
+
+Print the executable's version and exit. Use it in place of a subcommand.
+
+example
+```sh
+pk --version
+```
+
+This is equivalent to [`pk version`](#pk-version).
+
+## Recipes
+
+<!-- command combinations derived from cmd/pk/main.go, internal/config/config.go, internal/monitor/monitor.go, and internal/daemon/daemon.go -->
+
+Start with previews when choosing cleanup targets or resource thresholds.
+
+### Preview cleanup while you work
+
+Repeat the process cleanup preview every ten seconds. This leaves processes
+and Docker containers running, and records proposed cleanup in `pk history`.
+
+```sh
+pk cleanup --scope processes --watch --interval 10s
+```
+
+Press Ctrl-C when you have seen enough. See [cleanup](#pk-cleanup) for how targets
+are selected.
+
+### Watch resource use while keeping databases running
+
+Preview processes that stay above 90% CPU or 4 GiB of resident memory for a
+minute. Add your database process names to the protected list:
+
+```sh
+pk monitor --cpu 90 --mem 4096 --grace 1m --protected postgres,redis-server
+```
+
+This prints monitoring results without stopping anything. The
+[protected names](#--protected) must match the process names on your machine.
+
+### Check cleanup with a dev server
 
 <!-- manual verification based on internal/shell/pk.zsh, internal/daemon/daemon.go, and internal/audit/audit.go -->
 
@@ -128,50 +482,6 @@ or project path (`cwd`). The entry should have `"command":"daemon"`,
 Some servers exit on their own when a tab closes. If the server is gone but
 there is no matching cleanup record, that test does not establish that pk
 stopped it.
-
-For a bug report, include `pk doctor` output. It leaves out paths, commands,
-process details, and audit contents. See [Support](.github/SUPPORT.md).
-
-## Common commands
-
-<!-- CLI command usage implemented by cmd/pk/usage.go -->
-
-You can inspect and clean up processes without installing the background
-service. `scan` always previews. `cleanup` and `monitor` preview by default;
-add `--apply` to let them stop processes.
-
-```sh
-# Inspect matching processes
-pk scan
-
-# Preview process cleanup
-pk cleanup --scope processes
-
-# Apply process cleanup
-pk cleanup --scope processes --apply
-
-# Watch CPU and memory thresholds without stopping processes
-pk monitor
-```
-
-Without `--scope processes`, cleanup also considers local Docker containers.
-Use `pk help cleanup` or `pk help monitor` for options. The full command list is
-in [`pk help`](cmd/pk/usage.go).
-
-## Uninstall
-
-<!-- uninstall behavior derived from internal/service/service.go and internal/shell/shell.go -->
-
-```sh
-pk uninstall
-```
-
-This stops the service and removes the shell hook. Open a new shell afterward.
-The binary and stored history remain. To remove a Homebrew installation too:
-
-```sh
-brew uninstall yowainwright/tap/pk
-```
 
 ## Contributing
 
