@@ -12,7 +12,7 @@ func TestCommunityHealthFilesExist(t *testing.T) {
 		".github/SUPPORT.md",
 		".github/ISSUE_TEMPLATE/bug_report.yml",
 		".github/ISSUE_TEMPLATE/feature_request.yml",
-		".github/dependabot.yml",
+		".github/workflows/update.yml",
 	}
 	for _, path := range paths {
 		if readRepoFile(t, path) == "" {

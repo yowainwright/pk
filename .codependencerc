@@ -11,8 +11,7 @@
     },
     {
       "manager": "docker",
-      "mode": "verbose",
-      "codependencies": []
+      "mode": "precise"
     },
     {
       "manager": "github-actions",
