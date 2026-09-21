@@ -26,6 +26,16 @@ mise run check
 Readability checks warn during normal use and fail for agent edits.
 Correctness and formatting errors always fail. See [`.mise.toml`](../.mise.toml) for all tasks.
 
+## Dependency updates
+
+<!-- dependency automation derived from workflows/update.yml and ../.codependencerc -->
+
+[Codependence](workflows/update.yml) opens dependency PRs weekly or on manual dispatch.
+Policy lives in [`.codependencerc`](../.codependencerc). Run `codependence` for a local check.
+The workflow requires `PR_CREATE_TOKEN` with Contents, Pull requests, and Workflows write access.
+The digest-pinned Docker image in the process test script still needs manual updates;
+Codependence only scans Dockerfiles here.
+
 ## Release
 
 <!-- release commands derived from .mise.toml and scripts/release.sh -->

@@ -1,0 +1,40 @@
+name: Update dependencies
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-dependencies
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Update dependencies and open a pull request
+        uses: yowainwright/codependence@794ecc90f9dc614a2ddc478e1851a97b87259485 # v1.0.15
+        with:
+          config: .codependencerc
+          targets: go docker github-actions
+          version: "1.26.5"
+          noCache: "true"
+          pull-request: "true"
+          token: ${{ secrets.PR_CREATE_TOKEN }}
+          post-update-command: |
+            # Codependence 1.0.15 leaves standalone indirect comments in go.mod.
+            sed -i '/^[[:space:]]*\/\/ indirect[[:space:]]*$/d' go.mod
+            go mod tidy
+            go mod verify
+            go test -race ./...
+            git diff --check
