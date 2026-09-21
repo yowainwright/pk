@@ -5,14 +5,12 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/yowainwright/pk/badge)](https://scorecard.dev/viewer/?uri=github.com/yowainwright/pk)
 [![codecov](https://codecov.io/gh/yowainwright/pk/branch/main/graph/badge.svg)](https://codecov.io/gh/yowainwright/pk)
 
-**pk**. process killer. tracks processes in zsh sessions and kills
+**pk**, process killer, tracks processes in zsh sessions and kills
 unprotected leftovers when tracked sessions end.
 
 This can provide significant benefit during agentic coding where, for any number of reasons, processes can be abandoned.
 
 ## Quick start
-
-<!-- install commands derived from go.mod, .github/workflows/update-homebrew.yml, cmd/pk/main.go, internal/service/service.go, and internal/shell/shell.go -->
 
 Install pk with Homebrew, then enable background cleanup.
 
@@ -55,7 +53,7 @@ pk install --apply
 ## Why pk exists
 
 Coding agents often start dev servers, test watchers, and other processes that
-can outlive the work they were started for. This takes processing power from your computer! Finding and stopping background processes can help. pk aims to make this thoughtless with a simple api. Feedback welcome!
+can outlive the work they were started for. This takes processing power from your computer! Finding and kill background processes that are no longer used can help. pk aims to make this thoughtless with a simple api. Feedback welcome!
 
 ```text
 Open a zsh tab → run your tools → close the tab → pk cleans up leftovers
@@ -98,17 +96,16 @@ pk cleanup --scope processes
 pk cleanup --scope processes --apply
 ```
 
-The default scope is `all` which includes containers. Process cleanup uses the
-scanner's high-confidence targets; it can select processes in open sessions.
-Container cleanup considers Compose and devcontainer labels. A container with
-`pk.protected=true` is skipped. 
+The default cleanup scope is `all` which includes containers. Process cleanup uses the
+scanner's high-confidence targets. To avoid containers being cleaned up, a tag
+`pk.protected=true` can be set. 
 
 See the [process](internal/cleanup/cleanup.go)
 and [container](internal/docker/reports.go) selection rules.
 
 ### `pk monitor`
 
-Watch process CPU and memory use in the foreground. By default, pk logs what it
+`pk monitor` watches process CPU and memory use in the foreground. By default, pk logs what it
 would stop. With `--apply`, it stops an unprotected process and its unprotected
 descendants after the process stays above either threshold for the grace period.
 
@@ -116,29 +113,24 @@ descendants after the process stays above either threshold for the grace period.
 pk monitor --cpu 90 --mem 4096 --grace 1m
 pk monitor --cpu 90 --mem 4096 --grace 1m --apply
 ```
+`Ctrl` + `C` stops monitoring. 
 
-Press Ctrl-C to stop monitoring. This command uses resource thresholds across
-visible processes, independently of whether their terminal sessions have ended.
-The [monitor](internal/monitor/monitor.go) writes its results to terminal logs;
-it does not currently add them to `pk history`.
+`pk monitor` command uses resource thresholds across visible processes, independently of whether their terminal sessions have ended.
 
 ### pk install
 
-Install and start the background service for the current user, then add the zsh
-hook. `--apply` is required because the service can stop tracked leftovers.
+`pk install` installs and starts the background service for the current user. `--apply` is required because the service can stop tracked leftovers.
 
 ```sh
 pk install --apply
 ```
 
-Open a fresh zsh tab afterward. The [installer](internal/service) uses launchd
-on macOS and a user systemd service on Linux. It accepts `--apply`; the options
-for `monitor` and `cleanup` do not configure the installed service.
+After running, open a fresh zsh tab. The [installer](internal/service) uses launchd
+on macOS. It accepts `--apply`; the options for `monitor` and `cleanup` do not configure the installed service.
 
 ### pk uninstall
 
-Stop and remove the background service and remove the shell hook. Open a fresh
-shell afterward. The executable and stored history remain.
+Stop and remove the background service and remove the shell hook by running `pk uninstall`. Open a fresh shell afterward. The executable and stored history remain.
 
 ```sh
 pk uninstall
@@ -149,9 +141,6 @@ To also remove an installation made through Homebrew:
 ```sh
 brew uninstall yowainwright/tap/pk
 ```
-
-See the [service removal](internal/service/service.go) and
-[shell-hook removal](internal/shell/shell.go).
 
 ## pk api args
 
