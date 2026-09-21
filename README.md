@@ -84,10 +84,11 @@ counts shown by `pk obs`.
 
 ### `pk cleanup`
 
-`pk scan` previews processes and local Docker containers selected for cleanup. 
+`pk cleanup` previews processes and local Docker containers selected for cleanup.
 
 > [!NOTE]
 > you can add the `--apply` option to stop the selected targets and their unprotected process descendants.
+> This can stop a dev server even while its shell session is still open.
 
 Cleanup records both previews and applied results in [history](#pk-history).
 
@@ -97,8 +98,8 @@ pk cleanup --scope processes --apply
 ```
 
 The default cleanup scope is `all` which includes containers. Process cleanup uses the
-scanner's high-confidence targets. To avoid containers being cleaned up, a tag
-`pk.protected=true` can be set. 
+scanner's high-confidence targets. To avoid containers being cleaned up, a label
+`pk.protected=true` can be set.
 
 See the [process](internal/cleanup/cleanup.go)
 and [container](internal/docker/reports.go) selection rules.
@@ -126,7 +127,7 @@ pk install --apply
 ```
 
 After running, open a fresh zsh tab. The [installer](internal/service) uses launchd
-on macOS. It accepts `--apply`; the options for `monitor` and `cleanup` do not configure the installed service.
+on macOS and user systemd on Linux. It accepts `--apply`; the options for `monitor` and `cleanup` do not configure the installed service.
 
 ### pk uninstall
 
