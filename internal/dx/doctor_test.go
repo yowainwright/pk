@@ -1,4 +1,4 @@
-package diagnostics
+package dx
 
 import (
 	"bytes"
@@ -8,14 +8,14 @@ import (
 )
 
 func TestReportExcludesSensitiveDiagnosticDetails(t *testing.T) {
-	input := Input{
+	input := DoctorInput{
 		Version:       "v1.2.3",
 		ServiceStatus: "path = /Users/example/private\nstate = running",
 		AuditErr:      errors.New("opening /Users/example/.config/pk/events.jsonl"),
 	}
 	var output bytes.Buffer
 
-	if err := Write(&output, New(input)); err != nil {
+	if err := WriteDoctorReport(&output, NewDoctorReport(input)); err != nil {
 		t.Fatalf("write report: %v", err)
 	}
 
@@ -27,7 +27,7 @@ func TestReportExcludesSensitiveDiagnosticDetails(t *testing.T) {
 }
 
 func TestReportSummarizesAvailableServices(t *testing.T) {
-	input := Input{
+	input := DoctorInput{
 		Version:         "dev",
 		ServiceStatus:   "active",
 		DockerAvailable: true,
@@ -36,7 +36,7 @@ func TestReportSummarizesAvailableServices(t *testing.T) {
 	}
 	var output bytes.Buffer
 
-	if err := Write(&output, New(input)); err != nil {
+	if err := WriteDoctorReport(&output, NewDoctorReport(input)); err != nil {
 		t.Fatalf("write report: %v", err)
 	}
 
@@ -48,8 +48,8 @@ func TestReportSummarizesAvailableServices(t *testing.T) {
 }
 
 func TestReportIdentifiesStoppedLaunchdService(t *testing.T) {
-	input := Input{ServiceStatus: "state = not running"}
-	report := New(input)
+	input := DoctorInput{ServiceStatus: "state = not running"}
+	report := NewDoctorReport(input)
 
 	if report.Service != "installed but not running" {
 		t.Fatalf("unexpected service state %q", report.Service)
@@ -57,8 +57,8 @@ func TestReportIdentifiesStoppedLaunchdService(t *testing.T) {
 }
 
 func TestReportDoesNotAssumeUnknownServiceIsRunning(t *testing.T) {
-	input := Input{ServiceStatus: "service = enabled"}
-	report := New(input)
+	input := DoctorInput{ServiceStatus: "service = enabled"}
+	report := NewDoctorReport(input)
 
 	if report.Service != "unknown" {
 		t.Fatalf("unexpected service state %q", report.Service)

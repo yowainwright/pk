@@ -1,4 +1,4 @@
-package killer
+package process
 
 import (
 	"context"
@@ -10,13 +10,12 @@ import (
 	"time"
 
 	gopsutilProcess "github.com/shirou/gopsutil/v4/process"
-	appProcess "github.com/yowainwright/pk/internal/process"
 )
 
 const testCreateTime int64 = 123
 
 func TestNewUsesTermTimeout(t *testing.T) {
-	killer := New()
+	killer := NewKiller()
 
 	if killer.termTimeout != 2*time.Second {
 		t.Fatalf("expected two second timeout, got %s", killer.termTimeout)
@@ -62,7 +61,7 @@ func TestKillReturnsFindProcessErrors(t *testing.T) {
 	restoreCreateTime := replaceCreateTimeReader(t, matchingCreateTime)
 	defer restoreCreateTime()
 
-	err := New().Kill(context.Background(), testTarget(42))
+	err := NewKiller().Kill(context.Background(), testTarget(42))
 
 	if err == nil {
 		t.Fatal("expected find process error")
@@ -98,7 +97,7 @@ func TestWaitForExitReturnsTrueForMissingProcess(t *testing.T) {
 }
 
 func TestWaitForExitReturnsFalseWhenContextCancelled(t *testing.T) {
-	killer := New()
+	killer := NewKiller()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -161,7 +160,7 @@ func TestKillRejectsMissingCreateTime(t *testing.T) {
 	restoreFind := replaceFindProcess(t, proc, nil)
 	defer restoreFind()
 
-	err := testKiller().Kill(context.Background(), appProcess.Process{PID: 42})
+	err := testKiller().Kill(context.Background(), Process{PID: 42})
 
 	assertErrorContains(t, err, "no creation time")
 	assertSignals(t, proc.signals)
@@ -325,6 +324,6 @@ func assertErrorContains(t *testing.T, err error, expected string) {
 	}
 }
 
-func testTarget(pid int32) appProcess.Process {
-	return appProcess.Process{PID: pid, CreateTime: testCreateTime}
+func testTarget(pid int32) Process {
+	return Process{PID: pid, CreateTime: testCreateTime}
 }

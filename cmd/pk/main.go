@@ -19,24 +19,18 @@ import (
 
 	"github.com/yowainwright/pk/internal/audit"
 	"github.com/yowainwright/pk/internal/cleanup"
+	"github.com/yowainwright/pk/internal/cleanup/docker"
 	"github.com/yowainwright/pk/internal/config"
-	"github.com/yowainwright/pk/internal/daemon"
-	"github.com/yowainwright/pk/internal/diagnostics"
-	"github.com/yowainwright/pk/internal/docker"
 	"github.com/yowainwright/pk/internal/dx"
-	"github.com/yowainwright/pk/internal/killer"
 	"github.com/yowainwright/pk/internal/lifecycle"
-	"github.com/yowainwright/pk/internal/monitor"
-	"github.com/yowainwright/pk/internal/notify"
 	"github.com/yowainwright/pk/internal/process"
-	"github.com/yowainwright/pk/internal/scan"
 	"github.com/yowainwright/pk/internal/service"
 )
 
 var version = "dev"
 
 type processScanner interface {
-	Scan(context.Context) ([]scan.Report, error)
+	Scan(context.Context) ([]cleanup.Report, error)
 }
 
 type auditStore interface {
@@ -49,7 +43,7 @@ type commandRunner interface {
 }
 
 type lifecycleStore interface {
-	daemon.Store
+	lifecycle.StateStore
 	Append(lifecycle.Event) error
 	Events() ([]lifecycle.Event, error)
 }
@@ -98,10 +92,10 @@ type commandDependencies struct {
 	newScanner       func(*config.Config, process.Lister) processScanner
 	newAudit         func() (auditStore, error)
 	newLifecycle     func() (lifecycleStore, error)
-	newKiller        func() killer.Killer
+	newKiller        func() process.Killer
 	newDocker        func() docker.Client
 	newRunner        func(*config.Config, monitorOptions, *slog.Logger) commandRunner
-	newDaemon        func(*config.Config, daemon.Store, daemon.Audit) commandRunner
+	newDaemon        func(*config.Config, lifecycle.StateStore, lifecycle.Audit) commandRunner
 	newBackground    func() (backgroundManager, error)
 	readCreateTime   func(context.Context, int32) (int64, error)
 	send             func(string, string) error
@@ -114,14 +108,14 @@ type commandDependencies struct {
 func defaultDependencies() commandDependencies {
 	return commandDependencies{
 		newLister:        func() process.Lister { return process.NewLister() },
-		newScanner:       func(cfg *config.Config, lister process.Lister) processScanner { return scan.New(cfg, lister) },
+		newScanner:       func(cfg *config.Config, lister process.Lister) processScanner { return cleanup.NewScanner(cfg, lister) },
 		newAudit:         func() (auditStore, error) { return audit.DefaultLog() },
 		newLifecycle:     func() (lifecycleStore, error) { return lifecycle.DefaultStore() },
-		newKiller:        func() killer.Killer { return killer.New() },
+		newKiller:        func() process.Killer { return process.NewKiller() },
 		newDocker:        func() docker.Client { return docker.NewClient() },
 		newBackground:    func() (backgroundManager, error) { return service.DefaultManager() },
 		readCreateTime:   process.CreateTime,
-		send:             notify.Send,
+		send:             dx.Notify,
 		notifySignalFunc: signal.Notify,
 		stopSignalFunc:   signal.Stop,
 		resetSignalsFunc: signal.Reset,
@@ -262,7 +256,7 @@ func (a application) runScan(args []string) error {
 	if err != nil {
 		return err
 	}
-	var reports []scan.Report
+	var reports []cleanup.Report
 	err = a.ui.Task(a.ctx, "Scanning processes", func(ctx context.Context) error {
 		var scanErr error
 		reports, scanErr = a.scanReports(ctx, cfg)
@@ -271,7 +265,7 @@ func (a application) runScan(args []string) error {
 	if err != nil {
 		return err
 	}
-	return operationError("writing scan results", scan.WriteReports(a.out, reports))
+	return operationError("writing scan results", cleanup.WriteReports(a.out, reports))
 }
 
 func (a application) runCleanup(args []string) error {
@@ -762,7 +756,7 @@ type sessionCount struct {
 func (a application) runDoctor() error {
 	serviceStatus, serviceErr := a.diagnosticServiceStatus(a.ctx)
 	auditEvents, auditErr := a.diagnosticAuditEvents()
-	input := diagnostics.Input{
+	input := dx.DoctorInput{
 		Version:         displayVersion(),
 		ServiceStatus:   serviceStatus,
 		ServiceErr:      serviceErr,
@@ -771,7 +765,10 @@ func (a application) runDoctor() error {
 		AuditErr:        auditErr,
 		AuditOverride:   os.Getenv("PK_AUDIT_PATH") != "",
 	}
-	return operationError("writing diagnostics", diagnostics.Write(a.out, diagnostics.New(input)))
+	return operationError(
+		"writing diagnostics",
+		dx.WriteDoctorReport(a.out, dx.NewDoctorReport(input)),
+	)
 }
 
 func (a application) diagnosticServiceStatus(ctx context.Context) (string, error) {
@@ -791,7 +788,10 @@ func (a application) diagnosticAuditEvents() (int, error) {
 	return len(events), err
 }
 
-func (a application) scanReports(ctx context.Context, cfg *config.Config) ([]scan.Report, error) {
+func (a application) scanReports(
+	ctx context.Context,
+	cfg *config.Config,
+) ([]cleanup.Report, error) {
 	lister := a.deps.newLister()
 	scanner := a.deps.newScanner(cfg, lister)
 	return scanner.Scan(ctx)
@@ -915,15 +915,15 @@ func (a application) defaultDaemonStores() (lifecycleStore, auditStore, error) {
 
 func (a application) newDaemon(
 	cfg *config.Config,
-	store daemon.Store,
-	log daemon.Audit,
+	store lifecycle.StateStore,
+	log lifecycle.Audit,
 ) commandRunner {
 	if a.deps.newDaemon != nil {
 		return a.deps.newDaemon(cfg, store, log)
 	}
 	lister := a.deps.newLister()
 	processKiller := a.deps.newKiller()
-	return daemon.New(cfg, lister, processKiller, store, log, daemon.Options{})
+	return lifecycle.NewRunner(cfg, lister, processKiller, store, log, lifecycle.RunnerOptions{})
 }
 
 func (a application) runSessionID() error {
@@ -1239,11 +1239,11 @@ func (a application) newMonitor(
 	}
 	lister := a.deps.newLister()
 	processKiller := a.deps.newKiller()
-	monitorConfig := monitor.Options{
+	monitorConfig := cleanup.MonitorOptions{
 		Apply:  options.apply,
 		Logger: logger,
 	}
-	return monitor.New(cfg, lister, processKiller, a.notifyKilled, monitorConfig)
+	return cleanup.NewMonitor(cfg, lister, processKiller, a.notifyKilled, monitorConfig)
 }
 
 func (a application) notifyKilled(name string, pid int32) error {

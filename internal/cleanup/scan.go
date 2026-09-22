@@ -1,4 +1,4 @@
-package scan
+package cleanup
 
 import (
 	"context"
@@ -10,7 +10,6 @@ import (
 
 	"github.com/yowainwright/pk/internal/config"
 	"github.com/yowainwright/pk/internal/process"
-	"github.com/yowainwright/pk/internal/processtree"
 )
 
 type Action string
@@ -41,7 +40,7 @@ type Scanner struct {
 	lister process.Lister
 }
 
-func New(cfg *config.Config, lister process.Lister) *Scanner {
+func NewScanner(cfg *config.Config, lister process.Lister) *Scanner {
 	return &Scanner{cfg: cfg, lister: lister}
 }
 
@@ -55,7 +54,7 @@ func (s *Scanner) Scan(ctx context.Context) ([]Report, error) {
 
 func Reports(cfg *config.Config, procs []process.Process) []Report {
 	reports := make([]Report, 0, len(procs))
-	tree := processtree.NewIndex(procs)
+	tree := process.NewIndex(procs)
 	for _, proc := range procs {
 		report, ok := reportForProcess(cfg, proc, tree)
 		if ok {
@@ -81,7 +80,7 @@ func WriteReports(w io.Writer, reports []Report) error {
 func reportForProcess(
 	cfg *config.Config,
 	proc process.Process,
-	tree *processtree.Index,
+	tree *process.Index,
 ) (Report, bool) {
 	reasons := reasonsForProcess(cfg, proc, tree)
 	if len(reasons) == 0 {
@@ -90,15 +89,15 @@ func reportForProcess(
 
 	confidence := confidenceForReasons(reasons)
 	action := actionForConfidence(confidence)
-	descendants := reportDescendants(cfg, proc, tree)
+	descendants := unprotectedDescendants(cfg, proc, tree)
 	report := newReport(proc, descendants, action, confidence, reasons)
 	return report, true
 }
 
-func reportDescendants(
+func unprotectedDescendants(
 	cfg *config.Config,
 	proc process.Process,
-	tree *processtree.Index,
+	tree *process.Index,
 ) []process.Process {
 	descendants := tree.Descendants(proc.PID)
 	filtered := make([]process.Process, 0, len(descendants))
@@ -192,7 +191,7 @@ func confidenceForReasons(reasons []string) Confidence {
 func reasonsForProcess(
 	cfg *config.Config,
 	proc process.Process,
-	tree *processtree.Index,
+	tree *process.Index,
 ) []string {
 	if cfg.IsProtected(proc.Name) {
 		return protectedReasons(cfg, proc)
@@ -209,7 +208,7 @@ func reasonsForProcess(
 func cleanupReasons(
 	cfg *config.Config,
 	proc process.Process,
-	tree *processtree.Index,
+	tree *process.Index,
 ) []string {
 	reasons := commandReasons(proc)
 	reasons = append(reasons, ownershipReasons(proc, tree)...)
@@ -227,7 +226,7 @@ func cleanupReasons(
 	return reasons
 }
 
-func ownershipReasons(proc process.Process, tree *processtree.Index) []string {
+func ownershipReasons(proc process.Process, tree *process.Index) []string {
 	if hasAncestor(proc, tree, isAgentProcess) {
 		return []string{"agent-owned"}
 	}
@@ -312,7 +311,7 @@ func isSessionRoot(proc process.Process) bool {
 
 func hasAncestor(
 	proc process.Process,
-	tree *processtree.Index,
+	tree *process.Index,
 	matches func(process.Process) bool,
 ) bool {
 	walker := ancestorWalker{
@@ -323,7 +322,7 @@ func hasAncestor(
 }
 
 type ancestorWalker struct {
-	tree *processtree.Index
+	tree *process.Index
 	seen map[int32]bool
 }
 

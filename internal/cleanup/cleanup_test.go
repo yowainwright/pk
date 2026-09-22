@@ -9,13 +9,12 @@ import (
 
 	"github.com/yowainwright/pk/internal/audit"
 	"github.com/yowainwright/pk/internal/process"
-	"github.com/yowainwright/pk/internal/scan"
 )
 
 func TestRunDryRunRecordsWithoutKilling(t *testing.T) {
 	killer := &fakeKiller{}
 	recorder := &fakeRecorder{}
-	reports := reports(testReport(42, scan.ActionKill, scan.ConfidenceHigh))
+	reports := reports(testReport(42, ActionKill, ConfidenceHigh))
 	apply := false
 
 	results, err := Run(context.Background(), reports, killer, recorder, apply)
@@ -33,7 +32,7 @@ func TestRunDryRunRecordsWithoutKilling(t *testing.T) {
 func TestRunApplyKillsTargets(t *testing.T) {
 	killer := &fakeKiller{}
 	recorder := &fakeRecorder{}
-	reports := reports(testReport(42, scan.ActionKill, scan.ConfidenceHigh))
+	reports := reports(testReport(42, ActionKill, ConfidenceHigh))
 	apply := true
 
 	results, err := Run(context.Background(), reports, killer, recorder, apply)
@@ -49,7 +48,7 @@ func TestRunApplyKillsTargets(t *testing.T) {
 func TestRunKillsDescendantsBeforeTarget(t *testing.T) {
 	killer := &fakeKiller{}
 	recorder := &fakeRecorder{}
-	report := testReport(42, scan.ActionKill, scan.ConfidenceHigh)
+	report := testReport(42, ActionKill, ConfidenceHigh)
 	report.Descendants = append(report.Descendants, childProcess(43, 42))
 	report.Descendants = append(report.Descendants, childProcess(44, 43))
 	apply := true
@@ -69,7 +68,7 @@ func TestRunKillsDescendantsBeforeTarget(t *testing.T) {
 func TestRunRecordsKillErrors(t *testing.T) {
 	killer := &fakeKiller{err: errors.New("denied")}
 	recorder := &fakeRecorder{}
-	reports := reports(testReport(42, scan.ActionKill, scan.ConfidenceHigh))
+	reports := reports(testReport(42, ActionKill, ConfidenceHigh))
 	apply := true
 
 	results, err := Run(context.Background(), reports, killer, recorder, apply)
@@ -84,7 +83,7 @@ func TestRunRecordsKillErrors(t *testing.T) {
 }
 
 func TestTargetsIgnoresReportsBelowHighConfidence(t *testing.T) {
-	report := testReport(42, scan.ActionReport, scan.ConfidenceMedium)
+	report := testReport(42, ActionReport, ConfidenceMedium)
 	targets := Targets(reports(report))
 
 	if len(targets) != 0 {
@@ -94,7 +93,7 @@ func TestTargetsIgnoresReportsBelowHighConfidence(t *testing.T) {
 
 func TestWriteResultsWritesTabularOutput(t *testing.T) {
 	var out bytes.Buffer
-	report := testReport(42, scan.ActionKill, scan.ConfidenceHigh)
+	report := testReport(42, ActionKill, ConfidenceHigh)
 	result := Result{Report: report, Process: report.Process}
 	results := make([]Result, 0, 1)
 	results = append(results, result)
@@ -122,7 +121,7 @@ func TestWriteResultsHandlesNoTargets(t *testing.T) {
 func TestRunReturnsRecorderErrors(t *testing.T) {
 	killer := &fakeKiller{}
 	recorder := &fakeRecorder{err: errors.New("disk full")}
-	reports := reports(testReport(42, scan.ActionKill, scan.ConfidenceHigh))
+	reports := reports(testReport(42, ActionKill, ConfidenceHigh))
 	apply := false
 
 	_, err := Run(context.Background(), reports, killer, recorder, apply)
@@ -130,20 +129,6 @@ func TestRunReturnsRecorderErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected recorder error")
 	}
-}
-
-type fakeKiller struct {
-	called bool
-	pid    int32
-	pids   []int32
-	err    error
-}
-
-func (k *fakeKiller) Kill(ctx context.Context, target process.Process) error {
-	k.called = true
-	k.pid = target.PID
-	k.pids = append(k.pids, target.PID)
-	return k.err
 }
 
 type fakeRecorder struct {
@@ -159,8 +144,8 @@ func (r *fakeRecorder) Record(event audit.Event) error {
 	return nil
 }
 
-func testReport(pid int32, action scan.Action, confidence scan.Confidence) scan.Report {
-	var report scan.Report
+func testReport(pid int32, action Action, confidence Confidence) Report {
+	var report Report
 	report.Process = testProcess(pid)
 	report.Action = action
 	report.Confidence = confidence
@@ -182,8 +167,8 @@ func childProcess(pid int32, parentPID int32) process.Process {
 	return proc
 }
 
-func reports(report scan.Report) []scan.Report {
-	reports := make([]scan.Report, 0, 1)
+func reports(report Report) []Report {
+	reports := make([]Report, 0, 1)
 	reports = append(reports, report)
 	return reports
 }
@@ -202,17 +187,5 @@ func assertRecorded(t *testing.T, recorder *fakeRecorder, applied bool) {
 	}
 	if recorder.events[0].Applied != applied {
 		t.Fatalf("expected applied %t", applied)
-	}
-}
-
-func assertKilled(t *testing.T, killer *fakeKiller, expected ...int32) {
-	t.Helper()
-	if len(killer.pids) != len(expected) {
-		t.Fatalf("expected killed pids %#v, got %#v", expected, killer.pids)
-	}
-	for i, pid := range expected {
-		if killer.pids[i] != pid {
-			t.Fatalf("expected pid %d at %d, got %#v", pid, i, killer.pids)
-		}
 	}
 }

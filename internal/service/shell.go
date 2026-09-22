@@ -1,4 +1,4 @@
-package shell
+package service
 
 import (
 	_ "embed"
@@ -20,13 +20,13 @@ const (
 //go:embed pk.zsh
 var zshPlugin string
 
-type Installer struct {
+type ShellInstaller struct {
 	Home       string
 	ZDOTDIR    string
 	Executable string
 }
 
-func (i Installer) Install() error {
+func (i ShellInstaller) Install() error {
 	if err := i.validate(); err != nil {
 		return err
 	}
@@ -43,30 +43,30 @@ func (i Installer) Install() error {
 	return nil
 }
 
-func (i Installer) Uninstall() error {
+func (i ShellInstaller) Uninstall() error {
 	if err := removeSourceLine(i.ZshrcPath(), i.SourceLine()); err != nil {
 		return err
 	}
 	return removePlugin(i.PluginPath())
 }
 
-func (i Installer) PluginPath() string {
+func (i ShellInstaller) PluginPath() string {
 	return filepath.Join(i.Home, ".config", "pk", "shell", "pk.zsh")
 }
 
-func (i Installer) ZshrcPath() string {
+func (i ShellInstaller) ZshrcPath() string {
 	if i.ZDOTDIR != "" {
 		return filepath.Join(i.ZDOTDIR, ".zshrc")
 	}
 	return filepath.Join(i.Home, ".zshrc")
 }
 
-func (i Installer) SourceLine() string {
+func (i ShellInstaller) SourceLine() string {
 	path := "$HOME/.config/pk/shell/pk.zsh"
 	return fmt.Sprintf(`[ -r "%s" ] && source "%s" %s`, path, path, sourceMarker)
 }
 
-func (i Installer) validate() error {
+func (i ShellInstaller) validate() error {
 	if i.Home == "" {
 		return fmt.Errorf("home is required")
 	}

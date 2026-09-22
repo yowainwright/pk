@@ -18,7 +18,6 @@ import (
 
 	"github.com/yowainwright/pk/internal/config"
 	"github.com/yowainwright/pk/internal/process"
-	pkShell "github.com/yowainwright/pk/internal/shell"
 )
 
 const (
@@ -374,8 +373,8 @@ func (m *Manager) command() []string {
 	return command
 }
 
-func (m *Manager) shellInstaller() pkShell.Installer {
-	return pkShell.Installer{
+func (m *Manager) shellInstaller() ShellInstaller {
+	return ShellInstaller{
 		Home:       m.home,
 		ZDOTDIR:    m.zdotdir,
 		Executable: m.executable,

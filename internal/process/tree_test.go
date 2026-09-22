@@ -1,13 +1,11 @@
-package processtree
+package process
 
 import (
 	"testing"
-
-	"github.com/yowainwright/pk/internal/process"
 )
 
 func TestDescendantsReturnsNestedChildren(t *testing.T) {
-	procs := []process.Process{
+	procs := []Process{
 		testProcess(1, 0),
 		testProcess(3, 1),
 		testProcess(2, 1),
@@ -22,7 +20,7 @@ func TestDescendantsReturnsNestedChildren(t *testing.T) {
 
 func TestKillOrderKillsChildrenBeforeParents(t *testing.T) {
 	root := testProcess(1, 0)
-	descendants := []process.Process{
+	descendants := []Process{
 		testProcess(2, 1),
 		testProcess(3, 2),
 	}
@@ -34,7 +32,7 @@ func TestKillOrderKillsChildrenBeforeParents(t *testing.T) {
 
 func TestKillOrderIncludesDescendantsBelowFilteredIntermediaries(t *testing.T) {
 	root := testProcess(1, 0)
-	descendants := []process.Process{
+	descendants := []Process{
 		testProcess(3, 2),
 		testProcess(4, 3),
 	}
@@ -45,7 +43,7 @@ func TestKillOrderIncludesDescendantsBelowFilteredIntermediaries(t *testing.T) {
 }
 
 func TestDescendantsIgnoresCycles(t *testing.T) {
-	procs := []process.Process{
+	procs := []Process{
 		testProcess(2, 1),
 		testProcess(1, 2),
 	}
@@ -55,14 +53,14 @@ func TestDescendantsIgnoresCycles(t *testing.T) {
 	assertPIDs(t, descendants, 2)
 }
 
-func testProcess(pid int32, parentPID int32) process.Process {
-	var proc process.Process
+func testProcess(pid int32, parentPID int32) Process {
+	var proc Process
 	proc.PID = pid
 	proc.ParentPID = parentPID
 	return proc
 }
 
-func assertPIDs(t *testing.T, procs []process.Process, expected ...int32) {
+func assertPIDs(t *testing.T, procs []Process, expected ...int32) {
 	t.Helper()
 	if len(procs) != len(expected) {
 		t.Fatalf("expected pids %#v, got %#v", expected, pids(procs))
@@ -74,7 +72,7 @@ func assertPIDs(t *testing.T, procs []process.Process, expected ...int32) {
 	}
 }
 
-func pids(procs []process.Process) []int32 {
+func pids(procs []Process) []int32 {
 	result := make([]int32, 0, len(procs))
 	for _, proc := range procs {
 		result = append(result, proc.PID)
@@ -83,7 +81,7 @@ func pids(procs []process.Process) []int32 {
 }
 
 func TestIndexKeepsTraversalsIndependent(t *testing.T) {
-	procs := []process.Process{
+	procs := []Process{
 		testProcess(1, 3),
 		testProcess(2, 1),
 		testProcess(3, 2),
@@ -95,7 +93,7 @@ func TestIndexKeepsTraversalsIndependent(t *testing.T) {
 }
 
 func BenchmarkSnapshotDescendants(b *testing.B) {
-	procs := make([]process.Process, 0, 1000)
+	procs := make([]Process, 0, 1000)
 	for pid := int32(1); pid <= 1000; pid++ {
 		procs = append(procs, testProcess(pid, pid/2))
 	}
@@ -111,13 +109,13 @@ func BenchmarkSnapshotDescendants(b *testing.B) {
 	})
 }
 
-func rebuildForEachRoot(procs []process.Process) {
+func rebuildForEachRoot(procs []Process) {
 	for _, proc := range procs {
 		NewIndex(procs).Descendants(proc.PID)
 	}
 }
 
-func indexOncePerSnapshot(procs []process.Process) {
+func indexOncePerSnapshot(procs []Process) {
 	tree := NewIndex(procs)
 	for _, proc := range procs {
 		tree.Descendants(proc.PID)

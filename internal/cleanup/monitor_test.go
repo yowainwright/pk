@@ -1,4 +1,4 @@
-package monitor
+package cleanup
 
 import (
 	"bytes"
@@ -184,8 +184,8 @@ func TestCheckPreviewDoesNotKill(t *testing.T) {
 	cfg := applyConfig()
 	cfg.GracePeriod = 0
 	killer := &fakeKiller{}
-	options := Options{Apply: previewMode}
-	monitor := New(cfg, &fakeLister{}, killer, nil, options)
+	options := MonitorOptions{Apply: previewMode}
+	monitor := NewMonitor(cfg, &fakeLister{}, killer, nil, options)
 	monitor.lister = &fakeLister{procs: processes(overCPUProcess())}
 
 	monitor.check(context.Background())
@@ -201,8 +201,8 @@ func TestCheckPreviewDoesNotLogKillWarning(t *testing.T) {
 	cfg.GracePeriod = 0
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
-	options := Options{Apply: previewMode, Logger: logger}
-	monitor := New(cfg, &fakeLister{}, &fakeKiller{}, nil, options)
+	options := MonitorOptions{Apply: previewMode, Logger: logger}
+	monitor := NewMonitor(cfg, &fakeLister{}, &fakeKiller{}, nil, options)
 	monitor.lister = &fakeLister{procs: processes(overCPUProcess())}
 
 	monitor.check(context.Background())
@@ -221,8 +221,8 @@ func TestCheckNotifiesAfterKill(t *testing.T) {
 	cfg.GracePeriod = 0
 	killer := &fakeKiller{}
 	notified := false
-	options := Options{Apply: applyMode}
-	monitor := New(cfg, &fakeLister{}, killer, func(string, int32) error {
+	options := MonitorOptions{Apply: applyMode}
+	monitor := NewMonitor(cfg, &fakeLister{}, killer, func(string, int32) error {
 		notified = true
 		return nil
 	}, options)
@@ -241,8 +241,8 @@ func TestCheckDoesNotNotifyWhenKillFails(t *testing.T) {
 	cfg.GracePeriod = 0
 	killer := &fakeKiller{err: errors.New("denied")}
 	notified := false
-	options := Options{Apply: applyMode}
-	monitor := New(cfg, &fakeLister{}, killer, func(string, int32) error {
+	options := MonitorOptions{Apply: applyMode}
+	monitor := NewMonitor(cfg, &fakeLister{}, killer, func(string, int32) error {
 		notified = true
 		return nil
 	}, options)
@@ -271,8 +271,14 @@ func notificationFailureMonitor(logs *bytes.Buffer) *Monitor {
 	cfg.GracePeriod = 0
 	logger := slog.New(slog.NewTextHandler(logs, nil))
 	notify := func(string, int32) error { return errors.New("notification failed") }
-	options := Options{Apply: applyMode, Logger: logger}
-	return New(cfg, &fakeLister{procs: processes(overCPUProcess())}, &fakeKiller{}, notify, options)
+	options := MonitorOptions{Apply: applyMode, Logger: logger}
+	return NewMonitor(
+		cfg,
+		&fakeLister{procs: processes(overCPUProcess())},
+		&fakeKiller{},
+		notify,
+		options,
+	)
 }
 
 func TestCheckSkipsProtectedProcesses(t *testing.T) {
@@ -390,8 +396,8 @@ func testMonitor(cfg *config.Config) *Monitor {
 }
 
 func testMonitorWithKiller(cfg *config.Config, killer *fakeKiller) *Monitor {
-	options := Options{Apply: applyMode}
-	return New(cfg, &fakeLister{}, killer, nil, options)
+	options := MonitorOptions{Apply: applyMode}
+	return NewMonitor(cfg, &fakeLister{}, killer, nil, options)
 }
 
 func applyConfig() *config.Config {

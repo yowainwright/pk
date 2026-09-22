@@ -1,4 +1,4 @@
-package killer
+package process
 
 import (
 	"context"
@@ -9,13 +9,12 @@ import (
 	"time"
 
 	gopsutilProcess "github.com/shirou/gopsutil/v4/process"
-	appProcess "github.com/yowainwright/pk/internal/process"
 )
 
 const defaultPollInterval = 100 * time.Millisecond
 
 type Killer interface {
-	Kill(ctx context.Context, target appProcess.Process) error
+	Kill(ctx context.Context, target Process) error
 }
 
 type processHandle interface {
@@ -47,14 +46,14 @@ var readProcessCreateTime = func(ctx context.Context, pid int32) (int64, error) 
 	return proc.CreateTimeWithContext(ctx)
 }
 
-func New() *SignalKiller {
+func NewKiller() *SignalKiller {
 	return &SignalKiller{
 		termTimeout:  2 * time.Second,
 		pollInterval: defaultPollInterval,
 	}
 }
 
-func (k *SignalKiller) Kill(ctx context.Context, target appProcess.Process) error {
+func (k *SignalKiller) Kill(ctx context.Context, target Process) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -68,7 +67,7 @@ func (k *SignalKiller) Kill(ctx context.Context, target appProcess.Process) erro
 	return k.waitAndKill(ctx, target)
 }
 
-func (k *SignalKiller) waitAndKill(ctx context.Context, target appProcess.Process) error {
+func (k *SignalKiller) waitAndKill(ctx context.Context, target Process) error {
 	terminated, err := k.waitForExit(ctx, target)
 	if err != nil {
 		return err
@@ -81,7 +80,7 @@ func (k *SignalKiller) waitAndKill(ctx context.Context, target appProcess.Proces
 	return err
 }
 
-func (k *SignalKiller) waitForExit(ctx context.Context, target appProcess.Process) (bool, error) {
+func (k *SignalKiller) waitForExit(ctx context.Context, target Process) (bool, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, k.termTimeout)
 	defer cancel()
 	ticker := time.NewTicker(k.pollInterval)
@@ -109,7 +108,7 @@ func waitFinished(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-func signalInitialTarget(ctx context.Context, target appProcess.Process) (bool, error) {
+func signalInitialTarget(ctx context.Context, target Process) (bool, error) {
 	state, err := signalTarget(ctx, target, syscall.SIGTERM)
 	if err != nil {
 		return false, err
@@ -125,7 +124,7 @@ func signalInitialTarget(ctx context.Context, target appProcess.Process) (bool, 
 
 func signalTarget(
 	ctx context.Context,
-	target appProcess.Process,
+	target Process,
 	signal syscall.Signal,
 ) (targetState, error) {
 	state, err := inspectTarget(ctx, target)
@@ -143,12 +142,12 @@ func signalTarget(
 	return state, signalProcess(proc, target.PID, signal)
 }
 
-func inspectTarget(ctx context.Context, target appProcess.Process) (targetState, error) {
+func inspectTarget(ctx context.Context, target Process) (targetState, error) {
 	if target.CreateTime <= 0 {
 		return targetGone, fmt.Errorf("process %d has no creation time", target.PID)
 	}
 	createTime, err := readProcessCreateTime(ctx, target.PID)
-	if appProcess.IsGone(err) {
+	if IsGone(err) {
 		return targetGone, nil
 	}
 	if err != nil {
@@ -168,7 +167,7 @@ func signalProcess(proc processHandle, pid int32, signal syscall.Signal) error {
 	if errors.Is(err, os.ErrProcessDone) {
 		return nil
 	}
-	if appProcess.IsGone(err) {
+	if IsGone(err) {
 		return nil
 	}
 	return fmt.Errorf("sending %s to %d: %w", signal, pid, err)

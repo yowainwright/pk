@@ -1,4 +1,4 @@
-package shell
+package service
 
 import (
 	"context"
@@ -27,7 +27,7 @@ func TestZshPromptRecordsCommandCompletion(t *testing.T) {
 	}
 }
 
-func zshFixture(t *testing.T) (Installer, string) {
+func zshFixture(t *testing.T) (ShellInstaller, string) {
 	t.Helper()
 	installer := testInstaller(t)
 	installer.Executable = filepath.Join(installer.Home, "pk")
@@ -40,14 +40,14 @@ func zshFixture(t *testing.T) (Installer, string) {
 	return installer, filepath.Join(installer.Home, "events")
 }
 
-func runZshPrompt(t *testing.T, installer Installer, eventsPath string, exitCode string) {
+func runZshPrompt(t *testing.T, installer ShellInstaller, eventsPath string, exitCode string) {
 	t.Helper()
 	runZshScript(t, installer, eventsPath, zshPromptScript, exitCode)
 }
 
 func runZshScript(
 	t *testing.T,
-	installer Installer,
+	installer ShellInstaller,
 	eventsPath string,
 	script string,
 	extra string,
@@ -247,9 +247,9 @@ func TestInstallRemovesPluginWhenZshrcWriteFails(t *testing.T) {
 	assertFileMissing(t, installer.PluginPath())
 }
 
-func testInstaller(t *testing.T) Installer {
+func testInstaller(t *testing.T) ShellInstaller {
 	t.Helper()
-	return Installer{
+	return ShellInstaller{
 		Home:       t.TempDir(),
 		Executable: "/bin/pk",
 	}
@@ -318,7 +318,7 @@ func TestInstallAndUninstallPreserveSymlinkedZshrc(t *testing.T) {
 
 func symlinkedZshrc(
 	t *testing.T,
-	installer Installer,
+	installer ShellInstaller,
 	original string,
 	relative bool,
 ) (string, string) {
@@ -348,7 +348,7 @@ func zshrcLink(t *testing.T, home string, target string, relative bool) string {
 
 func assertPreservedZshrc(
 	t *testing.T,
-	installer Installer,
+	installer ShellInstaller,
 	original string,
 	target string,
 	link string,

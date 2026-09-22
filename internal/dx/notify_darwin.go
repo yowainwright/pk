@@ -1,4 +1,4 @@
-package notify
+package dx
 
 import (
 	"fmt"
@@ -10,7 +10,7 @@ var runCommand = func(name string, args ...string) error {
 	return exec.Command(name, args...).Run()
 }
 
-func Send(title, message string) error {
+func Notify(title, message string) error {
 	script := notificationScript(title, message)
 	return runCommand("osascript", "-e", script)
 }

@@ -32,7 +32,7 @@ Step 3. Open a new zsh tab. That's it!
 `.zshrc`. The `--apply` flag allows pk to stop tracked processes automatically.
 
 Background cleanup runs through launchd on macOS or user systemd on Linux.
-Session tracking uses the [interactive zsh hook](internal/shell/pk.zsh).
+Session tracking uses the [interactive zsh hook](internal/service/pk.zsh).
 See the [service setup](internal/service).
 
 ## Install
@@ -78,7 +78,7 @@ pk scan
 pk scan --cpu 90 --mem 4096
 ```
 
-The [scanner](internal/scan/scan.go) considers process names, ancestry, working
+The [scanner](internal/cleanup/scan.go) considers process names, ancestry, working
 directories, and resource use. This is a broader process scan than the session
 counts shown by `pk obs`.
 
@@ -102,7 +102,7 @@ scanner's high-confidence targets. To avoid containers being cleaned up, a label
 `pk.protected=true` can be set.
 
 See the [process](internal/cleanup/cleanup.go)
-and [container](internal/docker/docker.go) selection rules.
+and [container](internal/cleanup/docker/docker.go) selection rules.
 
 ### `pk monitor`
 
@@ -256,7 +256,7 @@ Choose what `cleanup` considers. The default is `all`.
 Use `processes` to leave containers alone, or `containers` to check only local
 Docker containers. `all` checks both.
 
-<!-- Docker endpoint validation and pinning from internal/docker/docker.go -->
+<!-- Docker endpoint validation and pinning from internal/cleanup/docker/docker.go -->
 
 Docker cleanup requires a Unix socket endpoint. Remote SSH and TCP endpoints
 are rejected. Each cleanup pass uses the same endpoint for listing and stopping
@@ -301,7 +301,7 @@ pk monitor --cpu 90
 
 In `monitor`, a reading above the threshold starts the grace period. In `scan`
 and `cleanup`, it adds a `high-cpu` reason; that reason alone does not make a
-process a cleanup target. See the [selection rules](internal/scan/scan.go).
+process a cleanup target. See the [selection rules](internal/cleanup/scan.go).
 
 ### `--mem`
 
@@ -317,7 +317,7 @@ In `monitor`, exceeding either `--cpu` or `--mem` starts the grace period. In
 `scan` and `cleanup`, exceeding this threshold adds a `high-memory` reason;
 other evidence is needed to select the process for cleanup. See
 [memory measurement](internal/process/process.go) and
-[threshold handling](internal/monitor/monitor.go).
+[threshold handling](internal/cleanup/monitor.go).
 
 ### `--interval`
 
@@ -346,7 +346,7 @@ pk monitor --cpu 90 --grace 1m
 A reading at or below both thresholds resets the timer. Without `--apply`, the
 monitor only reports what it would stop. `scan` and `cleanup` accept this option
 through the shared parser but do not use it. See the
-[monitor](internal/monitor/monitor.go).
+[monitor](internal/cleanup/monitor.go).
 
 ### `--protected`
 
@@ -373,7 +373,7 @@ Only the internal `__daemon` command uses this setting. The shared parser
 accepts it on `scan`, `cleanup`, and `monitor`, but it has no effect there.
 `pk install` does not accept it, so the installed service keeps the default.
 The bundled zsh hook does not identify agent sessions unless configured by an
-integration. See the [daemon's stale-session rules](internal/daemon/daemon.go).
+integration. See the [daemon's stale-session rules](internal/lifecycle/daemon.go).
 
 ### `--color`
 
@@ -412,7 +412,7 @@ This is equivalent to [`pk version`](#pk-version).
 
 ## Recipes
 
-<!-- command combinations derived from cmd/pk/main.go, internal/config/config.go, internal/monitor/monitor.go, and internal/daemon/daemon.go -->
+<!-- command combinations derived from cmd/pk/main.go, internal/config/config.go, internal/cleanup/monitor.go, and internal/lifecycle/daemon.go -->
 
 Start with previews when choosing cleanup targets or resource thresholds.
 
@@ -442,7 +442,7 @@ This prints monitoring results without stopping anything. The
 
 ### Check cleanup with a dev server
 
-<!-- manual verification based on internal/shell/pk.zsh, internal/daemon/daemon.go, and internal/audit/audit.go -->
+<!-- manual verification based on internal/service/pk.zsh, internal/lifecycle/daemon.go, and internal/audit/audit.go -->
 
 1. In a fresh zsh tab, start your project's usual dev server. Leave it running
    for at least six seconds so pk has time to discover it.

@@ -1,4 +1,4 @@
-package daemon
+package lifecycle
 
 import (
 	"context"
@@ -9,24 +9,21 @@ import (
 
 	"github.com/yowainwright/pk/internal/audit"
 	"github.com/yowainwright/pk/internal/config"
-	"github.com/yowainwright/pk/internal/killer"
-	"github.com/yowainwright/pk/internal/lifecycle"
 	"github.com/yowainwright/pk/internal/process"
-	"github.com/yowainwright/pk/internal/processtree"
 )
 
-type Store interface {
-	TakeEvents() ([]lifecycle.Event, error)
+type StateStore interface {
+	TakeEvents() ([]Event, error)
 	AcknowledgeEvents() error
-	LoadState() (lifecycle.State, error)
-	SaveState(lifecycle.State) error
+	LoadState() (State, error)
+	SaveState(State) error
 }
 
 type Audit interface {
 	Record(audit.Event) error
 }
 
-type Options struct {
+type RunnerOptions struct {
 	Now            func() time.Time
 	StartedAt      time.Time
 	ReadCreateTime func(context.Context, int32) (int64, error)
@@ -35,8 +32,8 @@ type Options struct {
 type Runner struct {
 	cfg            *config.Config
 	lister         process.Lister
-	killer         killer.Killer
-	store          Store
+	killer         process.Killer
+	store          StateStore
 	audit          Audit
 	now            func() time.Time
 	startedAt      time.Time
@@ -45,13 +42,13 @@ type Runner struct {
 
 const maxAppliedEventIDs = 2048
 
-func New(
+func NewRunner(
 	cfg *config.Config,
 	lister process.Lister,
-	k killer.Killer,
-	store Store,
+	k process.Killer,
+	store StateStore,
 	audit Audit,
-	options Options,
+	options RunnerOptions,
 ) *Runner {
 	return &Runner{
 		cfg:            cfg,
@@ -95,14 +92,14 @@ func (r *Runner) Tick(ctx context.Context) error {
 }
 
 func (r *Runner) applyCurrentEvents(
-	state lifecycle.State,
-	events []lifecycle.Event,
-) lifecycle.State {
+	state State,
+	events []Event,
+) State {
 	if r.cfg.SessionSince == 0 {
 		return applyEvents(state, events)
 	}
 	r.removeEarlierSessions(&state)
-	current := make([]lifecycle.Event, 0, len(events))
+	current := make([]Event, 0, len(events))
 	for _, event := range events {
 		if r.currentEvent(event) {
 			current = append(current, event)
@@ -111,14 +108,14 @@ func (r *Runner) applyCurrentEvents(
 	return applyEvents(state, current)
 }
 
-func (r *Runner) currentEvent(event lifecycle.Event) bool {
-	if lifecycleRequiresSession(event.Kind) {
+func (r *Runner) currentEvent(event Event) bool {
+	if requiresTerminalSession(event.Kind) {
 		return event.ShellCreateTime >= r.cfg.SessionSince
 	}
 	return event.ObservedAt.UnixMilli() >= r.cfg.SessionSince
 }
 
-func (r *Runner) removeEarlierSessions(state *lifecycle.State) {
+func (r *Runner) removeEarlierSessions(state *State) {
 	for id, session := range state.Sessions {
 		if session.ShellProcessKey.CreateTime < r.cfg.SessionSince {
 			delete(state.Sessions, id)
@@ -131,7 +128,7 @@ func (r *Runner) removeEarlierSessions(state *lifecycle.State) {
 	}
 }
 
-func (r *Runner) finishTick(state lifecycle.State, events []lifecycle.Event) error {
+func (r *Runner) finishTick(state State, events []Event) error {
 	setDaemonState(&state, os.Getpid(), r.startedAt, r.now())
 	retainAppliedEvents(&state, events)
 	if err := r.store.SaveState(state); err != nil {
@@ -153,20 +150,20 @@ func (r *Runner) loop(ctx context.Context, ticks <-chan time.Time) error {
 	}
 }
 
-func (r *Runner) load() (lifecycle.State, []lifecycle.Event, error) {
+func (r *Runner) load() (State, []Event, error) {
 	state, err := r.store.LoadState()
 	if err != nil {
-		return lifecycle.State{}, nil, fmt.Errorf("loading lifecycle state: %w", err)
+		return State{}, nil, fmt.Errorf("loading lifecycle state: %w", err)
 	}
 	events, err := r.store.TakeEvents()
 	if err != nil {
-		return lifecycle.State{}, nil, fmt.Errorf("taking lifecycle events: %w", err)
+		return State{}, nil, fmt.Errorf("taking lifecycle events: %w", err)
 	}
 	state.Ensure()
 	return state, events, nil
 }
 
-func (r *Runner) saveError(state lifecycle.State, cause error) error {
+func (r *Runner) saveError(state State, cause error) error {
 	state.LastError = cause.Error()
 	state.Daemon.LastError = cause.Error()
 	setDaemonState(&state, os.Getpid(), r.startedAt, r.now())
@@ -176,7 +173,7 @@ func (r *Runner) saveError(state lifecycle.State, cause error) error {
 	return cause
 }
 
-func applyEvents(state lifecycle.State, events []lifecycle.Event) lifecycle.State {
+func applyEvents(state State, events []Event) State {
 	state.Ensure()
 	for _, event := range events {
 		if state.AppliedEvents[event.EventID] {
@@ -188,7 +185,7 @@ func applyEvents(state lifecycle.State, events []lifecycle.Event) lifecycle.Stat
 	return state
 }
 
-func retainAppliedEvents(state *lifecycle.State, events []lifecycle.Event) {
+func retainAppliedEvents(state *State, events []Event) {
 	if len(state.AppliedEvents) <= maxAppliedEventIDs {
 		return
 	}
@@ -196,7 +193,7 @@ func retainAppliedEvents(state *lifecycle.State, events []lifecycle.Event) {
 	pruneAppliedEvents(state.AppliedEvents, current)
 }
 
-func currentEventIDs(events []lifecycle.Event) map[string]bool {
+func currentEventIDs(events []Event) map[string]bool {
 	current := make(map[string]bool, len(events))
 	for _, event := range events {
 		current[event.EventID] = true
@@ -216,8 +213,8 @@ func pruneAppliedEvents(applied map[string]bool, current map[string]bool) {
 	}
 }
 
-func applyEvent(state lifecycle.State, event lifecycle.Event) lifecycle.State {
-	if lifecycleRequiresSession(event.Kind) {
+func applyEvent(state State, event Event) State {
+	if requiresTerminalSession(event.Kind) {
 		applySessionEvent(&state, event)
 		return state
 	}
@@ -226,25 +223,12 @@ func applyEvent(state lifecycle.State, event lifecycle.Event) lifecycle.State {
 	return state
 }
 
-func lifecycleRequiresSession(kind string) bool {
-	switch kind {
-	case lifecycle.KindSessionStart, lifecycle.KindSessionHeartbeat:
-		return true
-	case lifecycle.KindSessionInactive, lifecycle.KindSessionStop:
-		return true
-	case lifecycle.KindCommandStart, lifecycle.KindCommandFinish:
-		return true
-	default:
-		return false
-	}
-}
-
-func applySessionEvent(state *lifecycle.State, event lifecycle.Event) {
+func applySessionEvent(state *State, event Event) {
 	session := sessionFromEvent(*state, event)
 	switch event.Kind {
-	case lifecycle.KindSessionStop:
+	case KindSessionStop:
 		markSessionEnded(&session, event.ObservedAt)
-	case lifecycle.KindSessionInactive, lifecycle.KindCommandFinish:
+	case KindSessionInactive, KindCommandFinish:
 		markSessionInactive(&session, event.ObservedAt)
 	default:
 		markSessionActive(&session, event.ObservedAt)
@@ -253,13 +237,13 @@ func applySessionEvent(state *lifecycle.State, event lifecycle.Event) {
 	applySessionPresenceEvent(state, event)
 }
 
-func sessionFromEvent(state lifecycle.State, event lifecycle.Event) lifecycle.TerminalSession {
+func sessionFromEvent(state State, event Event) TerminalSession {
 	session := state.Sessions[event.TerminalSessionID]
 	if session.ID == "" {
 		session.ID = event.TerminalSessionID
 		session.StartedAt = event.ObservedAt
 	}
-	session.ShellProcessKey = lifecycle.ProcessKey{
+	session.ShellProcessKey = ProcessKey{
 		PID:        event.ShellPID,
 		CreateTime: event.ShellCreateTime,
 	}
@@ -278,16 +262,16 @@ func keepID(current string, next string) string {
 	return current
 }
 
-func applyContextPresenceEvent(state *lifecycle.State, event lifecycle.Event) {
+func applyContextPresenceEvent(state *State, event Event) {
 	applyPresenceByID(state.Tabs, event.TabID, event)
 	applyPresenceByID(state.Windows, event.WindowID, event)
 	applyPresenceByID(state.AgentSessions, event.AgentSessionID, event)
 	applyPresenceByID(state.UserSessions, event.UserSessionID, event)
 }
 
-func applySessionPresenceEvent(state *lifecycle.State, event lifecycle.Event) {
+func applySessionPresenceEvent(state *State, event Event) {
 	applyPresenceByID(state.Tabs, event.TabID, event)
-	if event.Kind == lifecycle.KindSessionStop {
+	if event.Kind == KindSessionStop {
 		return
 	}
 	touchPresenceByID(state.Windows, event.WindowID, event)
@@ -296,9 +280,9 @@ func applySessionPresenceEvent(state *lifecycle.State, event lifecycle.Event) {
 }
 
 func applyPresenceByID(
-	presences map[string]lifecycle.Presence,
+	presences map[string]Presence,
 	id string,
-	event lifecycle.Event,
+	event Event,
 ) {
 	if id == "" {
 		return
@@ -308,9 +292,9 @@ func applyPresenceByID(
 }
 
 func touchPresenceByID(
-	presences map[string]lifecycle.Presence,
+	presences map[string]Presence,
 	id string,
-	event lifecycle.Event,
+	event Event,
 ) {
 	if id == "" {
 		return
@@ -320,10 +304,10 @@ func touchPresenceByID(
 }
 
 func touchPresence(
-	presence lifecycle.Presence,
+	presence Presence,
 	id string,
 	at time.Time,
-) lifecycle.Presence {
+) Presence {
 	if presence.ID == "" {
 		presence.ID = id
 		presence.StartedAt = at
@@ -335,10 +319,10 @@ func touchPresence(
 }
 
 func presenceFromEvent(
-	presence lifecycle.Presence,
+	presence Presence,
 	id string,
-	event lifecycle.Event,
-) lifecycle.Presence {
+	event Event,
+) Presence {
 	if presence.ID == "" {
 		presence.ID = id
 		presence.StartedAt = event.ObservedAt
@@ -348,9 +332,9 @@ func presenceFromEvent(
 }
 
 func markPresence(
-	presence lifecycle.Presence,
-	event lifecycle.Event,
-) lifecycle.Presence {
+	presence Presence,
+	event Event,
+) Presence {
 	if presenceEndedKind(event.Kind) {
 		return endedPresence(presence, event.ObservedAt)
 	}
@@ -362,7 +346,7 @@ func markPresence(
 
 func presenceEndedKind(kind string) bool {
 	switch kind {
-	case lifecycle.KindSessionStop, lifecycle.KindContextStop:
+	case KindSessionStop, KindContextStop:
 		return true
 	default:
 		return false
@@ -371,14 +355,14 @@ func presenceEndedKind(kind string) bool {
 
 func presenceInactiveKind(kind string) bool {
 	switch kind {
-	case lifecycle.KindSessionInactive, lifecycle.KindCommandFinish:
+	case KindSessionInactive, KindCommandFinish:
 		return true
 	default:
 		return false
 	}
 }
 
-func activePresence(presence lifecycle.Presence) lifecycle.Presence {
+func activePresence(presence Presence) Presence {
 	presence.Exists = true
 	presence.Active = true
 	presence.InactiveAt = time.Time{}
@@ -387,9 +371,9 @@ func activePresence(presence lifecycle.Presence) lifecycle.Presence {
 }
 
 func inactivePresence(
-	presence lifecycle.Presence,
+	presence Presence,
 	at time.Time,
-) lifecycle.Presence {
+) Presence {
 	presence.Exists = true
 	presence.Active = false
 	presence.InactiveAt = at
@@ -397,29 +381,29 @@ func inactivePresence(
 }
 
 func endedPresence(
-	presence lifecycle.Presence,
+	presence Presence,
 	at time.Time,
-) lifecycle.Presence {
+) Presence {
 	presence.Exists = false
 	presence.Active = false
 	presence.EndedAt = at
 	return presence
 }
 
-func markSessionActive(session *lifecycle.TerminalSession, at time.Time) {
+func markSessionActive(session *TerminalSession, at time.Time) {
 	session.Exists = true
 	session.Active = true
 	session.InactiveAt = time.Time{}
 	session.EndedAt = time.Time{}
 }
 
-func markSessionInactive(session *lifecycle.TerminalSession, at time.Time) {
+func markSessionInactive(session *TerminalSession, at time.Time) {
 	session.Exists = true
 	session.Active = false
 	session.InactiveAt = at
 }
 
-func markSessionEnded(session *lifecycle.TerminalSession, at time.Time) {
+func markSessionEnded(session *TerminalSession, at time.Time) {
 	session.Exists = false
 	session.Active = false
 	session.EndedAt = at
@@ -427,9 +411,9 @@ func markSessionEnded(session *lifecycle.TerminalSession, at time.Time) {
 
 func (r *Runner) reconcile(
 	ctx context.Context,
-	state lifecycle.State,
+	state State,
 	procs []process.Process,
-) (lifecycle.State, error) {
+) (State, error) {
 	live := liveProcesses(procs)
 	state, deferred := r.reconcileSessions(ctx, state, procs, live)
 	if err := ctx.Err(); err != nil {
@@ -440,12 +424,12 @@ func (r *Runner) reconcile(
 
 func (r *Runner) reconcileSessions(
 	ctx context.Context,
-	state lifecycle.State,
+	state State,
 	procs []process.Process,
 	live map[string]process.Process,
-) (lifecycle.State, map[string]bool) {
+) (State, map[string]bool) {
 	deferred := make(map[string]bool)
-	tree := processtree.NewIndex(procs)
+	tree := process.NewIndex(procs)
 	for _, session := range state.Sessions {
 		var err error
 		state, err = r.reconcileSession(ctx, state, session, tree, live)
@@ -462,7 +446,7 @@ func (r *Runner) reconcileSessions(
 func liveProcesses(procs []process.Process) map[string]process.Process {
 	live := make(map[string]process.Process, len(procs))
 	for _, proc := range procs {
-		key := lifecycle.ProcessKeyString(proc.PID, proc.CreateTime)
+		key := ProcessKeyString(proc.PID, proc.CreateTime)
 		live[key] = proc
 	}
 	return live
@@ -470,11 +454,11 @@ func liveProcesses(procs []process.Process) map[string]process.Process {
 
 func (r *Runner) reconcileSession(
 	ctx context.Context,
-	state lifecycle.State,
-	session lifecycle.TerminalSession,
-	tree *processtree.Index,
+	state State,
+	session TerminalSession,
+	tree *process.Index,
 	live map[string]process.Process,
-) (lifecycle.State, error) {
+) (State, error) {
 	if sessionEnded(session) {
 		state.Sessions[session.ID] = session
 		return state, nil
@@ -484,11 +468,11 @@ func (r *Runner) reconcileSession(
 
 func (r *Runner) reconcileLiveSession(
 	ctx context.Context,
-	state lifecycle.State,
-	session lifecycle.TerminalSession,
-	tree *processtree.Index,
+	state State,
+	session TerminalSession,
+	tree *process.Index,
 	live map[string]process.Process,
-) (lifecycle.State, error) {
+) (State, error) {
 	exists, err := r.processExists(ctx, session.ShellProcessKey, live)
 	if err != nil {
 		return state, fmt.Errorf("checking session %s: %w", session.ID, err)
@@ -502,7 +486,7 @@ func (r *Runner) reconcileLiveSession(
 
 func (r *Runner) processExists(
 	ctx context.Context,
-	key lifecycle.ProcessKey,
+	key ProcessKey,
 	live map[string]process.Process,
 ) (bool, error) {
 	if _, exists := live[key.String()]; exists {
@@ -521,7 +505,7 @@ func (r *Runner) processExists(
 	return createTime == key.CreateTime, nil
 }
 
-func sessionEnded(session lifecycle.TerminalSession) bool {
+func sessionEnded(session TerminalSession) bool {
 	missing := !session.Exists
 	hasEndedAt := !session.EndedAt.IsZero()
 	ended := missing && hasEndedAt
@@ -529,10 +513,10 @@ func sessionEnded(session lifecycle.TerminalSession) bool {
 }
 
 func sessionMissing(
-	state lifecycle.State,
-	session lifecycle.TerminalSession,
+	state State,
+	session TerminalSession,
 	now time.Time,
-) lifecycle.State {
+) State {
 	if session.EndedAt.IsZero() {
 		session.EndedAt = now
 	}
@@ -543,19 +527,19 @@ func sessionMissing(
 	return state
 }
 
-func liveSession(session lifecycle.TerminalSession, now time.Time) lifecycle.TerminalSession {
+func liveSession(session TerminalSession, now time.Time) TerminalSession {
 	session.Exists = true
 	session.LastSeenAt = now
 	return session
 }
 
 func trackDescendants(
-	state lifecycle.State,
+	state State,
 	sessionID string,
 	rootPID int32,
-	tree *processtree.Index,
+	tree *process.Index,
 	now time.Time,
-) lifecycle.State {
+) State {
 	for _, proc := range tree.Descendants(rootPID) {
 		state = trackProcess(state, sessionID, proc, now)
 	}
@@ -563,17 +547,17 @@ func trackDescendants(
 }
 
 func trackProcess(
-	state lifecycle.State,
+	state State,
 	sessionID string,
 	proc process.Process,
 	now time.Time,
-) lifecycle.State {
-	key := lifecycle.ProcessKeyString(proc.PID, proc.CreateTime)
+) State {
+	key := ProcessKeyString(proc.PID, proc.CreateTime)
 	managed := state.Processes[key]
 	if managed.FirstSeenAt.IsZero() {
 		managed.FirstSeenAt = now
 	}
-	managed.ProcessKey = lifecycle.ProcessKey{PID: proc.PID, CreateTime: proc.CreateTime}
+	managed.ProcessKey = ProcessKey{PID: proc.PID, CreateTime: proc.CreateTime}
 	managed.TerminalSessionID = sessionID
 	managed.LastSeenAt = now
 	managed.LastParentPID = proc.ParentPID
@@ -585,10 +569,10 @@ func trackProcess(
 
 func (r *Runner) killEligible(
 	ctx context.Context,
-	state lifecycle.State,
+	state State,
 	live map[string]process.Process,
 	deferred map[string]bool,
-) lifecycle.State {
+) State {
 	for key, managed := range state.Processes {
 		if deferred[managed.TerminalSessionID] {
 			continue
@@ -605,9 +589,9 @@ func (r *Runner) killEligible(
 
 func (r *Runner) pruneMissingProcess(
 	ctx context.Context,
-	state lifecycle.State,
-	key lifecycle.ProcessKey,
-) lifecycle.State {
+	state State,
+	key ProcessKey,
+) State {
 	exists, err := r.processExists(ctx, key, nil)
 	if err != nil {
 		state.LastError = fmt.Sprintf("checking managed process %s: %v", key.String(), err)
@@ -622,11 +606,11 @@ func (r *Runner) pruneMissingProcess(
 
 func (r *Runner) killIfEligible(
 	ctx context.Context,
-	state lifecycle.State,
+	state State,
 	key string,
-	managed lifecycle.ManagedProcess,
+	managed ManagedProcess,
 	proc process.Process,
-) lifecycle.State {
+) State {
 	session := state.Sessions[managed.TerminalSessionID]
 	reason, ok := r.killReason(state, session)
 	if !ok {
@@ -638,11 +622,11 @@ func (r *Runner) killIfEligible(
 
 func (r *Runner) handleEligibleProcess(
 	ctx context.Context,
-	state lifecycle.State,
+	state State,
 	key string,
 	proc process.Process,
 	reason string,
-) lifecycle.State {
+) State {
 	protected, err := r.skipProtected(proc, reason)
 	if err != nil {
 		state.LastError = err.Error()
@@ -655,11 +639,11 @@ func (r *Runner) handleEligibleProcess(
 
 func (r *Runner) killManagedProcess(
 	ctx context.Context,
-	state lifecycle.State,
+	state State,
 	key string,
 	proc process.Process,
 	reason string,
-) lifecycle.State {
+) State {
 	err := r.kill(ctx, proc, reason)
 	if err != nil {
 		state.LastError = err.Error()
@@ -679,8 +663,8 @@ func (r *Runner) skipProtected(proc process.Process, reason string) (bool, error
 }
 
 func (r *Runner) killReason(
-	state lifecycle.State,
-	session lifecycle.TerminalSession,
+	state State,
+	session TerminalSession,
 ) (string, bool) {
 	if reason, ok := endedContextReason(state, session); ok {
 		return reason, true
@@ -689,8 +673,8 @@ func (r *Runner) killReason(
 }
 
 func endedContextReason(
-	state lifecycle.State,
-	session lifecycle.TerminalSession,
+	state State,
+	session TerminalSession,
 ) (string, bool) {
 	if presenceEnded(state.Tabs[session.TabID]) {
 		return "tab-ended", true
@@ -702,8 +686,8 @@ func endedContextReason(
 }
 
 func endedSessionReason(
-	state lifecycle.State,
-	session lifecycle.TerminalSession,
+	state State,
+	session TerminalSession,
 ) (string, bool) {
 	if presenceEnded(state.AgentSessions[session.AgentSessionID]) {
 		return "agent-session-ended", true
@@ -714,14 +698,14 @@ func endedSessionReason(
 	return "", false
 }
 
-func presenceEnded(presence lifecycle.Presence) bool {
+func presenceEnded(presence Presence) bool {
 	hasID := presence.ID != ""
 	missing := !presence.Exists
 	ended := hasID && missing
 	return ended
 }
 
-func (r *Runner) sessionKillReason(session lifecycle.TerminalSession) (string, bool) {
+func (r *Runner) sessionKillReason(session TerminalSession) (string, bool) {
 	if !session.Exists {
 		return "session-ended", true
 	}
@@ -737,7 +721,7 @@ func (r *Runner) sessionKillReason(session lifecycle.TerminalSession) (string, b
 	return staleReason(session.InactiveAt, r.cfg.StaleLimit, r.now())
 }
 
-func staleEligibleSession(session lifecycle.TerminalSession) bool {
+func staleEligibleSession(session TerminalSession) bool {
 	return session.AgentSessionID != ""
 }
 
@@ -807,7 +791,7 @@ func auditEvent(input decisionAudit) audit.Event {
 }
 
 func setDaemonState(
-	state *lifecycle.State,
+	state *State,
 	pid int,
 	startedAt time.Time,
 	lastTickAt time.Time,

@@ -14,13 +14,11 @@ import (
 	"time"
 
 	"github.com/yowainwright/pk/internal/audit"
+	"github.com/yowainwright/pk/internal/cleanup"
+	"github.com/yowainwright/pk/internal/cleanup/docker"
 	"github.com/yowainwright/pk/internal/config"
-	"github.com/yowainwright/pk/internal/daemon"
-	"github.com/yowainwright/pk/internal/docker"
-	"github.com/yowainwright/pk/internal/killer"
 	"github.com/yowainwright/pk/internal/lifecycle"
 	"github.com/yowainwright/pk/internal/process"
-	"github.com/yowainwright/pk/internal/scan"
 )
 
 func TestEnableAndDisableUseBackgroundManager(t *testing.T) {
@@ -296,7 +294,7 @@ func TestRunReturnsUnknownCommand(t *testing.T) {
 
 func TestRunScanWritesReports(t *testing.T) {
 	deps := commandDeps(t)
-	deps.scanner.reports = []scan.Report{commandReport()}
+	deps.scanner.reports = []cleanup.Report{commandReport()}
 	var out bytes.Buffer
 
 	err := deps.run([]string{"scan"}, &out)
@@ -374,7 +372,7 @@ func TestRunScanReturnsParseError(t *testing.T) {
 
 func TestRunCleanupDefaultsToDryRun(t *testing.T) {
 	deps := commandDeps(t)
-	deps.scanner.reports = []scan.Report{commandReport()}
+	deps.scanner.reports = []cleanup.Report{commandReport()}
 	var out bytes.Buffer
 
 	err := deps.run([]string{"cleanup"}, &out)
@@ -416,7 +414,7 @@ func TestRunCleanupProcessesScopeSkipsDocker(t *testing.T) {
 
 func TestRunCleanupReturnsAuditStoreError(t *testing.T) {
 	deps := commandDeps(t)
-	deps.scanner.reports = []scan.Report{commandReport()}
+	deps.scanner.reports = []cleanup.Report{commandReport()}
 	deps.auditStoreErr = errors.New("audit unavailable")
 	var out bytes.Buffer
 
@@ -429,7 +427,7 @@ func TestRunCleanupReturnsAuditStoreError(t *testing.T) {
 
 func TestRunCleanupReturnsRecorderError(t *testing.T) {
 	deps := commandDeps(t)
-	deps.scanner.reports = []scan.Report{commandReport()}
+	deps.scanner.reports = []cleanup.Report{commandReport()}
 	deps.audit.err = errors.New("disk full")
 	var out bytes.Buffer
 
@@ -442,7 +440,7 @@ func TestRunCleanupReturnsRecorderError(t *testing.T) {
 
 func TestRunCleanupApplyKillsTarget(t *testing.T) {
 	deps := commandDeps(t)
-	deps.scanner.reports = []scan.Report{commandReport()}
+	deps.scanner.reports = []cleanup.Report{commandReport()}
 	var out bytes.Buffer
 
 	err := deps.run([]string{"cleanup", "--apply"}, &out)
@@ -1064,13 +1062,13 @@ func TestIsVersionCommand(t *testing.T) {
 }
 
 type fakeScanner struct {
-	reports         []scan.Report
+	reports         []cleanup.Report
 	err             error
 	called          bool
 	requireCanceled bool
 }
 
-func (s *fakeScanner) Scan(ctx context.Context) ([]scan.Report, error) {
+func (s *fakeScanner) Scan(ctx context.Context) ([]cleanup.Report, error) {
 	s.called = true
 	if s.requireCanceled {
 		return nil, ctx.Err()
@@ -1277,7 +1275,7 @@ func installCommandDeps(t *testing.T, deps *commandTestDeps) {
 	deps.dependencies.newLifecycle = func() (lifecycleStore, error) {
 		return deps.lifecycle, deps.lifecycleStoreErr
 	}
-	deps.dependencies.newKiller = func() killer.Killer { return deps.killer }
+	deps.dependencies.newKiller = func() process.Killer { return deps.killer }
 	deps.dependencies.newDocker = func() docker.Client { return deps.docker }
 	deps.dependencies.newRunner = func(
 		cfg *config.Config,
@@ -1290,8 +1288,8 @@ func installCommandDeps(t *testing.T, deps *commandTestDeps) {
 	}
 	deps.dependencies.newDaemon = func(
 		cfg *config.Config,
-		store daemon.Store,
-		log daemon.Audit,
+		store lifecycle.StateStore,
+		log lifecycle.Audit,
 	) commandRunner {
 		deps.cfg = cfg
 		return deps.runner
@@ -1316,12 +1314,12 @@ func (l fakeCommandLister) List(ctx context.Context) ([]process.Process, error) 
 	return nil, nil
 }
 
-func commandReport() scan.Report {
-	var report scan.Report
+func commandReport() cleanup.Report {
+	var report cleanup.Report
 	report.Process.PID = 42
 	report.Process.Name = "node"
-	report.Action = scan.ActionKill
-	report.Confidence = scan.ConfidenceHigh
+	report.Action = cleanup.ActionKill
+	report.Confidence = cleanup.ConfidenceHigh
 	report.Reasons = append(report.Reasons, "restartable-command", "dev-cwd")
 	return report
 }
