@@ -445,9 +445,10 @@ func (r *Runner) reconcileSessions(
 	live map[string]process.Process,
 ) (lifecycle.State, map[string]bool) {
 	deferred := make(map[string]bool)
+	tree := processtree.NewIndex(procs)
 	for _, session := range state.Sessions {
 		var err error
-		state, err = r.reconcileSession(ctx, state, session, procs, live)
+		state, err = r.reconcileSession(ctx, state, session, tree, live)
 		if err == nil {
 			continue
 		}
@@ -471,21 +472,21 @@ func (r *Runner) reconcileSession(
 	ctx context.Context,
 	state lifecycle.State,
 	session lifecycle.TerminalSession,
-	procs []process.Process,
+	tree *processtree.Index,
 	live map[string]process.Process,
 ) (lifecycle.State, error) {
 	if sessionEnded(session) {
 		state.Sessions[session.ID] = session
 		return state, nil
 	}
-	return r.reconcileLiveSession(ctx, state, session, procs, live)
+	return r.reconcileLiveSession(ctx, state, session, tree, live)
 }
 
 func (r *Runner) reconcileLiveSession(
 	ctx context.Context,
 	state lifecycle.State,
 	session lifecycle.TerminalSession,
-	procs []process.Process,
+	tree *processtree.Index,
 	live map[string]process.Process,
 ) (lifecycle.State, error) {
 	exists, err := r.processExists(ctx, session.ShellProcessKey, live)
@@ -496,7 +497,7 @@ func (r *Runner) reconcileLiveSession(
 		return sessionMissing(state, session, r.now()), nil
 	}
 	state.Sessions[session.ID] = liveSession(session, r.now())
-	return trackDescendants(state, session.ID, session.ShellProcessKey.PID, procs, r.now()), nil
+	return trackDescendants(state, session.ID, session.ShellProcessKey.PID, tree, r.now()), nil
 }
 
 func (r *Runner) processExists(
@@ -552,10 +553,10 @@ func trackDescendants(
 	state lifecycle.State,
 	sessionID string,
 	rootPID int32,
-	procs []process.Process,
+	tree *processtree.Index,
 	now time.Time,
 ) lifecycle.State {
-	for _, proc := range processtree.Descendants(procs, rootPID) {
+	for _, proc := range tree.Descendants(rootPID) {
 		state = trackProcess(state, sessionID, proc, now)
 	}
 	return state

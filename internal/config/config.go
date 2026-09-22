@@ -146,6 +146,9 @@ func parseFlags(name string, args []string, flags *flag.FlagSet) error {
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parsing %s flags: %w", name, err)
 	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("%s does not accept positional arguments: %q", name, flags.Args())
+	}
 	return nil
 }
 

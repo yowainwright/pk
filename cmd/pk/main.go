@@ -44,11 +44,7 @@ type auditStore interface {
 	Events() ([]audit.Event, error)
 }
 
-type monitorRunner interface {
-	Run(context.Context) error
-}
-
-type daemonRunner interface {
+type commandRunner interface {
 	Run(context.Context) error
 }
 
@@ -91,35 +87,47 @@ type colorArgument struct {
 }
 
 type application struct {
-	ctx context.Context
-	ui  *dx.UI
-	out io.Writer
+	ctx  context.Context
+	ui   *dx.UI
+	out  io.Writer
+	deps commandDependencies
 }
 
-var (
-	newProcessLister  = func() process.Lister { return process.NewLister() }
-	newProcessScanner = func(cfg *config.Config, lister process.Lister) processScanner { return scan.New(cfg, lister) }
-	newAuditStore     = func() (auditStore, error) { return audit.DefaultLog() }
-	newProcessKiller  = func() killer.Killer { return killer.New() }
-	newDockerClient   = func() docker.Client { return docker.NewClient() }
-	newLifecycleStore = func() (lifecycleStore, error) { return lifecycle.DefaultStore() }
-	newMonitorRunner  = func(
-		cfg *config.Config,
-		options monitorOptions,
-		logger *slog.Logger,
-	) monitorRunner {
-		return newMonitor(cfg, options, logger)
+type commandDependencies struct {
+	newLister        func() process.Lister
+	newScanner       func(*config.Config, process.Lister) processScanner
+	newAudit         func() (auditStore, error)
+	newLifecycle     func() (lifecycleStore, error)
+	newKiller        func() killer.Killer
+	newDocker        func() docker.Client
+	newRunner        func(*config.Config, monitorOptions, *slog.Logger) commandRunner
+	newDaemon        func(*config.Config, daemon.Store, daemon.Audit) commandRunner
+	newBackground    func() (backgroundManager, error)
+	readCreateTime   func(context.Context, int32) (int64, error)
+	send             func(string, string) error
+	notifySignalFunc func(chan<- os.Signal, ...os.Signal)
+	stopSignalFunc   func(chan<- os.Signal)
+	resetSignalsFunc func(...os.Signal)
+	exitFunc         func(int)
+}
+
+func defaultDependencies() commandDependencies {
+	return commandDependencies{
+		newLister:        func() process.Lister { return process.NewLister() },
+		newScanner:       func(cfg *config.Config, lister process.Lister) processScanner { return scan.New(cfg, lister) },
+		newAudit:         func() (auditStore, error) { return audit.DefaultLog() },
+		newLifecycle:     func() (lifecycleStore, error) { return lifecycle.DefaultStore() },
+		newKiller:        func() killer.Killer { return killer.New() },
+		newDocker:        func() docker.Client { return docker.NewClient() },
+		newBackground:    func() (backgroundManager, error) { return service.DefaultManager() },
+		readCreateTime:   process.CreateTime,
+		send:             notify.Send,
+		notifySignalFunc: signal.Notify,
+		stopSignalFunc:   signal.Stop,
+		resetSignalsFunc: signal.Reset,
+		exitFunc:         os.Exit,
 	}
-	newDaemonRunner      = newDaemon
-	newBackgroundManager = func() (backgroundManager, error) { return service.DefaultManager() }
-	readCreateTime       = process.CreateTime
-	sendNotification     = notify.Send
-	handleShutdownSignal = handleSignals
-	notifySignal         = signal.Notify
-	stopSignal           = signal.Stop
-	resetSignals         = signal.Reset
-	exitProcess          = os.Exit
-)
+}
 
 const (
 	defaultApply           = false
@@ -132,9 +140,9 @@ const (
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	restoreSignals := handleShutdownSignal(cancel)
-	defer restoreSignals()
 	app, args, err := newApplication(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+	restoreSignals := app.handleSignals(cancel)
+	defer restoreSignals()
 	if err == nil {
 		err = app.run(args)
 	}
@@ -156,7 +164,7 @@ func newApplication(
 		Color:      options.color,
 		Timestamps: true,
 	})
-	return application{ctx: ctx, ui: ui, out: out}, commandArgs, err
+	return application{ctx: ctx, ui: ui, out: out, deps: defaultDependencies()}, commandArgs, err
 }
 
 func (a application) run(args []string) error {
@@ -169,6 +177,9 @@ func (a application) run(args []string) error {
 }
 
 func (a application) dispatch(command string, args []string) error {
+	if err := validateCommandArguments(command, args); err != nil {
+		return err
+	}
 	handled, err := a.dispatchPrimary(command, args)
 	if handled {
 		return err
@@ -176,12 +187,22 @@ func (a application) dispatch(command string, args []string) error {
 	return a.dispatchSettings(command, args)
 }
 
+func validateCommandArguments(command string, args []string) error {
+	switch command {
+	case "history", "obs", "uninstall", "status", "doctor", "enable", "disable", "__session-id":
+		if len(args) != 0 {
+			return fmt.Errorf("%s does not accept arguments", command)
+		}
+	}
+	return nil
+}
+
 func (a application) dispatchSettings(command string, args []string) error {
 	switch command {
 	case "enable":
-		return a.runEnable(args)
+		return a.runEnable()
 	case "disable":
-		return a.runDisable(args)
+		return a.runDisable()
 	case "ignore", "unignore":
 		return a.runIgnore(command, args)
 	default:
@@ -221,7 +242,7 @@ func (a application) dispatchUtility(command string, args []string) error {
 	case "__session":
 		return a.runSession(args)
 	case "__session-id":
-		return a.runSessionID(args)
+		return a.runSessionID()
 	default:
 		return fmt.Errorf("unknown command %q", command)
 	}
@@ -232,7 +253,7 @@ func (a application) runMonitor(args []string) error {
 	if err != nil {
 		return err
 	}
-	m := newMonitorRunner(cfg, options, a.ui.Logger())
+	m := a.newMonitor(cfg, options, a.ui.Logger())
 	return m.Run(a.ctx)
 }
 
@@ -244,7 +265,7 @@ func (a application) runScan(args []string) error {
 	var reports []scan.Report
 	err = a.ui.Task(a.ctx, "Scanning processes", func(ctx context.Context) error {
 		var scanErr error
-		reports, scanErr = scanReports(ctx, cfg)
+		reports, scanErr = a.scanReports(ctx, cfg)
 		return operationError("scanning processes", scanErr)
 	})
 	if err != nil {
@@ -259,7 +280,7 @@ func (a application) runCleanup(args []string) error {
 		return err
 	}
 	if options.watch {
-		return runCleanupWatch(a.ctx, cfg, options, a.out)
+		return a.runCleanupWatch(a.ctx, cfg, options, a.out)
 	}
 	return a.runBoundedCleanup(cfg, options)
 }
@@ -269,7 +290,7 @@ func (a application) runBoundedCleanup(cfg *config.Config, options cleanupOption
 	label := cleanupTaskLabel(options.apply)
 	err := a.ui.Task(a.ctx, label, func(ctx context.Context) error {
 		var cleanupErr error
-		results, cleanupErr = collectCleanupResults(ctx, cfg, options)
+		results, cleanupErr = a.collectCleanupResults(ctx, cfg, options)
 		return cleanupErr
 	})
 	if err != nil {
@@ -279,13 +300,13 @@ func (a application) runBoundedCleanup(cfg *config.Config, options cleanupOption
 	return operationError("writing cleanup results", writeErr)
 }
 
-func runCleanupOnce(
+func (a application) runCleanupOnce(
 	ctx context.Context,
 	cfg *config.Config,
 	options cleanupOptions,
 	out io.Writer,
 ) error {
-	results, err := collectCleanupResults(ctx, cfg, options)
+	results, err := a.collectCleanupResults(ctx, cfg, options)
 	if err != nil {
 		return err
 	}
@@ -298,7 +319,7 @@ type cleanupResults struct {
 	containers []docker.Result
 }
 
-func collectCleanupResults(
+func (a application) collectCleanupResults(
 	ctx context.Context,
 	cfg *config.Config,
 	options cleanupOptions,
@@ -306,31 +327,31 @@ func collectCleanupResults(
 	if err := cfg.Reload(); err != nil {
 		return cleanupResults{}, err
 	}
-	log, err := newAuditStore()
+	log, err := a.deps.newAudit()
 	if err != nil {
 		return cleanupResults{}, operationError("opening audit store", err)
 	}
-	return collectAuditedCleanup(ctx, cfg, options, log)
+	return a.collectAuditedCleanup(ctx, cfg, options, log)
 }
 
-func collectAuditedCleanup(
+func (a application) collectAuditedCleanup(
 	ctx context.Context,
 	cfg *config.Config,
 	options cleanupOptions,
 	log auditStore,
 ) (cleanupResults, error) {
-	results, err := runProcessCleanup(ctx, cfg, options, log)
+	results, err := a.runProcessCleanup(ctx, cfg, options, log)
 	if err != nil {
 		return cleanupResults{}, operationError("cleaning processes", err)
 	}
-	containerResults, err := runDockerCleanup(ctx, log, options)
+	containerResults, err := a.runDockerCleanup(ctx, log, options)
 	if err != nil {
 		return cleanupResults{}, operationError("cleaning containers", err)
 	}
 	return cleanupResults{processes: results, containers: containerResults}, nil
 }
 
-func runProcessCleanup(
+func (a application) runProcessCleanup(
 	ctx context.Context,
 	cfg *config.Config,
 	options cleanupOptions,
@@ -339,18 +360,14 @@ func runProcessCleanup(
 	if !options.includesProcesses() {
 		return nil, nil
 	}
-	reports, err := scanReports(ctx, cfg)
+	reports, err := a.scanReports(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
-	results, err := cleanup.Run(ctx, reports, newProcessKiller(), log, options.apply)
-	if err != nil {
-		return nil, err
-	}
-	return results, nil
+	return cleanup.Run(ctx, reports, a.deps.newKiller(), log, options.apply)
 }
 
-func runDockerCleanup(
+func (a application) runDockerCleanup(
 	ctx context.Context,
 	log auditStore,
 	options cleanupOptions,
@@ -358,10 +375,7 @@ func runDockerCleanup(
 	if !options.includesContainers() {
 		return nil, nil
 	}
-	client := newDockerClient()
-	if !client.Available() {
-		return nil, nil
-	}
+	client := a.deps.newDocker()
 	return executeDockerCleanup(ctx, client, log, options.apply)
 }
 
@@ -405,21 +419,21 @@ func writeProcessCleanupResults(out io.Writer, results []cleanup.Result) error {
 	return cleanup.WriteResults(out, results)
 }
 
-func runCleanupWatch(
+func (a application) runCleanupWatch(
 	ctx context.Context,
 	cfg *config.Config,
 	options cleanupOptions,
 	out io.Writer,
 ) error {
-	if err := runCleanupOnce(ctx, cfg, options, out); err != nil {
+	if err := a.runCleanupOnce(ctx, cfg, options, out); err != nil {
 		return err
 	}
 	ticker := time.NewTicker(cfg.Interval)
 	defer ticker.Stop()
-	return cleanupLoop(ctx, ticker.C, cfg, options, out)
+	return a.cleanupLoop(ctx, ticker.C, cfg, options, out)
 }
 
-func cleanupLoop(
+func (a application) cleanupLoop(
 	ctx context.Context,
 	ticks <-chan time.Time,
 	cfg *config.Config,
@@ -431,7 +445,7 @@ func cleanupLoop(
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticks:
-			if err := runCleanupOnce(ctx, cfg, options, out); err != nil {
+			if err := a.runCleanupOnce(ctx, cfg, options, out); err != nil {
 				return err
 			}
 		}
@@ -441,7 +455,7 @@ func cleanupLoop(
 func (a application) runHistory() error {
 	var events []audit.Event
 	err := a.ui.Task(a.ctx, "Loading cleanup history", func(context.Context) error {
-		log, logErr := newAuditStore()
+		log, logErr := a.deps.newAudit()
 		if logErr != nil {
 			return operationError("opening audit store", logErr)
 		}
@@ -463,18 +477,18 @@ func (a application) runInstall(args []string) error {
 	if !options.apply {
 		return fmt.Errorf("install requires --apply to enable destructive background cleanup")
 	}
-	err = a.ui.Task(a.ctx, "Installing background cleanup", installBackground)
+	err = a.ui.Task(a.ctx, "Installing background cleanup", a.installBackground)
 	if err != nil {
 		return err
 	}
 	return a.ui.Value("installed")
 }
 
-func installBackground(ctx context.Context) error {
+func (a application) installBackground(ctx context.Context) error {
 	if err := validateSavedIgnores(); err != nil {
 		return err
 	}
-	manager, err := newBackgroundManager()
+	manager, err := a.deps.newBackground()
 	if err != nil {
 		return operationError("opening background manager", err)
 	}
@@ -490,11 +504,8 @@ func validateSavedIgnores() error {
 	return err
 }
 
-func (a application) runEnable(args []string) error {
-	if len(args) != 0 {
-		return fmt.Errorf("enable does not accept arguments")
-	}
-	err := a.ui.Task(a.ctx, "Enabling background cleanup", installBackground)
+func (a application) runEnable() error {
+	err := a.ui.Task(a.ctx, "Enabling background cleanup", a.installBackground)
 	if err != nil {
 		return err
 	}
@@ -503,11 +514,8 @@ func (a application) runEnable(args []string) error {
 	)
 }
 
-func (a application) runDisable(args []string) error {
-	if len(args) != 0 {
-		return fmt.Errorf("disable does not accept arguments")
-	}
-	err := a.ui.Task(a.ctx, "Disabling background cleanup", uninstallBackground)
+func (a application) runDisable() error {
+	err := a.ui.Task(a.ctx, "Disabling background cleanup", a.uninstallBackground)
 	if err != nil {
 		return err
 	}
@@ -572,15 +580,15 @@ func (a application) listIgnores(store *config.Store) error {
 }
 
 func (a application) runUninstall() error {
-	err := a.ui.Task(a.ctx, "Uninstalling background cleanup", uninstallBackground)
+	err := a.ui.Task(a.ctx, "Uninstalling background cleanup", a.uninstallBackground)
 	if err != nil {
 		return err
 	}
 	return a.ui.Value("uninstalled")
 }
 
-func uninstallBackground(ctx context.Context) error {
-	manager, err := newBackgroundManager()
+func (a application) uninstallBackground(ctx context.Context) error {
+	manager, err := a.deps.newBackground()
 	if err != nil {
 		return operationError("opening background manager", err)
 	}
@@ -589,19 +597,11 @@ func uninstallBackground(ctx context.Context) error {
 
 func (a application) runStatus() error {
 	var status string
-	err := a.ui.Task(
-		a.ctx,
-		"Checking background cleanup",
-		func(ctx context.Context) error {
-			manager, managerErr := newBackgroundManager()
-			if managerErr != nil {
-				return operationError("opening background manager", managerErr)
-			}
-			var statusErr error
-			status, statusErr = manager.Status(ctx)
-			return operationError("reading background status", statusErr)
-		},
-	)
+	err := a.ui.Task(a.ctx, "Checking background cleanup", func(ctx context.Context) error {
+		var statusErr error
+		status, statusErr = a.diagnosticServiceStatus(ctx)
+		return operationError("reading background status", statusErr)
+	})
 	if err != nil {
 		return err
 	}
@@ -609,19 +609,19 @@ func (a application) runStatus() error {
 }
 
 func (a application) runObs() error {
-	input, err := loadObsInput(a.ctx)
+	input, err := a.loadObsInput(a.ctx)
 	if err != nil {
 		return err
 	}
 	return writeObs(a.out, input)
 }
 
-func loadObsInput(ctx context.Context) (obsInput, error) {
-	serviceStatus, err := diagnosticServiceStatus(ctx)
+func (a application) loadObsInput(ctx context.Context) (obsInput, error) {
+	serviceStatus, err := a.diagnosticServiceStatus(ctx)
 	if err != nil {
 		return obsInput{}, operationError("reading background status", err)
 	}
-	store, err := newLifecycleStore()
+	store, err := a.deps.newLifecycle()
 	if err != nil {
 		return obsInput{}, operationError("opening lifecycle store", err)
 	}
@@ -760,13 +760,13 @@ type sessionCount struct {
 }
 
 func (a application) runDoctor() error {
-	serviceStatus, serviceErr := diagnosticServiceStatus(a.ctx)
-	auditEvents, auditErr := diagnosticAuditEvents()
+	serviceStatus, serviceErr := a.diagnosticServiceStatus(a.ctx)
+	auditEvents, auditErr := a.diagnosticAuditEvents()
 	input := diagnostics.Input{
 		Version:         displayVersion(),
 		ServiceStatus:   serviceStatus,
 		ServiceErr:      serviceErr,
-		DockerAvailable: newDockerClient().Available(),
+		DockerAvailable: a.deps.newDocker().Available(),
 		AuditEvents:     auditEvents,
 		AuditErr:        auditErr,
 		AuditOverride:   os.Getenv("PK_AUDIT_PATH") != "",
@@ -774,16 +774,16 @@ func (a application) runDoctor() error {
 	return operationError("writing diagnostics", diagnostics.Write(a.out, diagnostics.New(input)))
 }
 
-func diagnosticServiceStatus(ctx context.Context) (string, error) {
-	manager, err := newBackgroundManager()
+func (a application) diagnosticServiceStatus(ctx context.Context) (string, error) {
+	manager, err := a.deps.newBackground()
 	if err != nil {
-		return "", err
+		return "", operationError("opening background manager", err)
 	}
 	return manager.Status(ctx)
 }
 
-func diagnosticAuditEvents() (int, error) {
-	log, err := newAuditStore()
+func (a application) diagnosticAuditEvents() (int, error) {
+	log, err := a.deps.newAudit()
 	if err != nil {
 		return 0, err
 	}
@@ -791,9 +791,9 @@ func diagnosticAuditEvents() (int, error) {
 	return len(events), err
 }
 
-func scanReports(ctx context.Context, cfg *config.Config) ([]scan.Report, error) {
-	lister := newProcessLister()
-	scanner := newProcessScanner(cfg, lister)
+func (a application) scanReports(ctx context.Context, cfg *config.Config) ([]scan.Report, error) {
+	lister := a.deps.newLister()
+	scanner := a.deps.newScanner(cfg, lister)
 	return scanner.Scan(ctx)
 }
 
@@ -871,7 +871,7 @@ func parseInstallOptionsWithOutput(
 	flags := flag.NewFlagSet("install", flag.ContinueOnError)
 	flags.SetOutput(output)
 	flags.BoolVar(&options.apply, "apply", defaultApply, "Enable destructive background cleanup")
-	if err := flags.Parse(args); err != nil {
+	if err := parseCommandFlags(flags, args); err != nil {
 		return installOptions{}, err
 	}
 	return options, nil
@@ -882,17 +882,17 @@ func (a application) runDaemon(args []string) error {
 	if err != nil {
 		return operationError("parsing daemon options", err)
 	}
-	store, log, err := daemonStores(cfg)
+	store, log, err := a.daemonStores(cfg)
 	if err != nil {
 		return err
 	}
-	return newDaemonRunner(cfg, store, log).Run(a.ctx)
+	return a.newDaemon(cfg, store, log).Run(a.ctx)
 }
 
-func daemonStores(cfg *config.Config) (lifecycleStore, auditStore, error) {
+func (a application) daemonStores(cfg *config.Config) (lifecycleStore, auditStore, error) {
 	dir := cfg.StateDir()
 	if dir == "" {
-		return defaultDaemonStores()
+		return a.defaultDaemonStores()
 	}
 	path := os.Getenv("PK_AUDIT_PATH")
 	if path == "" {
@@ -901,32 +901,32 @@ func daemonStores(cfg *config.Config) (lifecycleStore, auditStore, error) {
 	return lifecycle.NewStore(dir), audit.New(path), nil
 }
 
-func defaultDaemonStores() (lifecycleStore, auditStore, error) {
-	store, err := newLifecycleStore()
+func (a application) defaultDaemonStores() (lifecycleStore, auditStore, error) {
+	store, err := a.deps.newLifecycle()
 	if err != nil {
 		return nil, nil, operationError("opening lifecycle store", err)
 	}
-	log, err := newAuditStore()
+	log, err := a.deps.newAudit()
 	if err != nil {
 		return nil, nil, operationError("opening audit store", err)
 	}
 	return store, log, nil
 }
 
-func newDaemon(
+func (a application) newDaemon(
 	cfg *config.Config,
 	store daemon.Store,
 	log daemon.Audit,
-) daemonRunner {
-	lister := newProcessLister()
-	processKiller := newProcessKiller()
+) commandRunner {
+	if a.deps.newDaemon != nil {
+		return a.deps.newDaemon(cfg, store, log)
+	}
+	lister := a.deps.newLister()
+	processKiller := a.deps.newKiller()
 	return daemon.New(cfg, lister, processKiller, store, log, daemon.Options{})
 }
 
-func (a application) runSessionID(args []string) error {
-	if len(args) != 0 {
-		return fmt.Errorf("__session-id does not accept arguments")
-	}
+func (a application) runSessionID() error {
 	id, err := lifecycle.NewEventID()
 	if err != nil {
 		return err
@@ -943,7 +943,7 @@ func (a application) runSession(args []string) error {
 	if err != nil {
 		return operationError("reading lifecycle identity", err)
 	}
-	store, err := newLifecycleStore()
+	store, err := a.deps.newLifecycle()
 	if err != nil {
 		return operationError("opening lifecycle store", err)
 	}
@@ -973,13 +973,23 @@ func parseSessionFlags(
 	var exitCode exitCodeArg
 	flags := sessionFlagSet(output)
 	registerSessionFlags(flags, &event, &pids, &exitCode)
-	if err := flags.Parse(args); err != nil {
+	if err := parseCommandFlags(flags, args); err != nil {
 		return lifecycle.Event{}, exitCodeArg{}, err
 	}
 	if err := applySessionPIDs(&event, pids); err != nil {
 		return lifecycle.Event{}, exitCodeArg{}, err
 	}
 	return event, exitCode, nil
+}
+
+func parseCommandFlags(flags *flag.FlagSet, args []string) error {
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("%s does not accept positional arguments: %q", flags.Name(), flags.Args())
+	}
+	return nil
 }
 
 func sessionFlagSet(output io.Writer) *flag.FlagSet {
@@ -1083,7 +1093,7 @@ func (a application) hydrateSessionEvent(event lifecycle.Event) (lifecycle.Event
 	if !needsCreateTime {
 		return event, nil
 	}
-	createTime, err := readCreateTime(a.ctx, event.ShellPID)
+	createTime, err := a.deps.readCreateTime(a.ctx, event.ShellPID)
 	if err != nil {
 		return lifecycle.Event{}, err
 	}
@@ -1189,15 +1199,15 @@ func trimSeparator(args []string) []string {
 	return args
 }
 
-func handleSignals(cancel context.CancelFunc) func() {
+func (a application) handleSignals(cancel context.CancelFunc) func() {
 	sigCh := make(chan os.Signal, 1)
-	notifySignal(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	a.deps.notifySignalFunc(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	done := make(chan struct{})
 	var once sync.Once
 	restore := func() {
 		once.Do(func() {
-			stopSignal(sigCh)
-			resetSignals(syscall.SIGINT, syscall.SIGTERM)
+			a.deps.stopSignalFunc(sigCh)
+			a.deps.resetSignalsFunc(syscall.SIGINT, syscall.SIGTERM)
 			close(done)
 		})
 	}
@@ -1219,23 +1229,26 @@ func waitForSignal(
 	}
 }
 
-func newMonitor(
+func (a application) newMonitor(
 	cfg *config.Config,
 	options monitorOptions,
 	logger *slog.Logger,
-) *monitor.Monitor {
-	lister := newProcessLister()
-	processKiller := newProcessKiller()
+) commandRunner {
+	if a.deps.newRunner != nil {
+		return a.deps.newRunner(cfg, options, logger)
+	}
+	lister := a.deps.newLister()
+	processKiller := a.deps.newKiller()
 	monitorConfig := monitor.Options{
 		Apply:  options.apply,
 		Logger: logger,
 	}
-	return monitor.New(cfg, lister, processKiller, notifyKilled, monitorConfig)
+	return monitor.New(cfg, lister, processKiller, a.notifyKilled, monitorConfig)
 }
 
-func notifyKilled(name string, pid int32) error {
+func (a application) notifyKilled(name string, pid int32) error {
 	msg := fmt.Sprintf("Killed %s (PID %d)", name, pid)
-	return operationError("sending kill notification", sendNotification("pk", msg))
+	return operationError("sending kill notification", a.deps.send("pk", msg))
 }
 
 func (a application) exitOnError(err error) {
@@ -1248,7 +1261,7 @@ func (a application) exitOnError(err error) {
 
 	a.ui.Logger().Error("pk error", "error", err)
 	a.ui.Logger().Info("Run pk doctor to create a shareable diagnostic report")
-	exitProcess(1)
+	a.deps.exitFunc(1)
 }
 
 func isVersionCommand(args []string) bool {

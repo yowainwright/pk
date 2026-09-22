@@ -110,16 +110,17 @@ func (m *Monitor) check(ctx context.Context) {
 
 func (m *Monitor) handleProcesses(ctx context.Context, procs []process.Process) map[int32]bool {
 	seen := make(map[int32]bool)
+	tree := processtree.NewIndex(procs)
 
 	for _, p := range procs {
 		seen[p.PID] = true
-		m.handleProcess(ctx, p, procs)
+		m.handleProcess(ctx, p, tree)
 	}
 
 	return seen
 }
 
-func (m *Monitor) handleProcess(ctx context.Context, p process.Process, procs []process.Process) {
+func (m *Monitor) handleProcess(ctx context.Context, p process.Process, tree *processtree.Index) {
 	if m.cfg.IsProtected(p.Name) {
 		delete(m.offenses, p.PID)
 		return
@@ -134,15 +135,15 @@ func (m *Monitor) handleProcess(ctx context.Context, p process.Process, procs []
 		return
 	}
 
-	descendants := m.killDescendants(procs, p.PID)
+	descendants := m.killDescendants(tree, p.PID)
 	m.killExpiredOffense(ctx, p, descendants)
 }
 
 func (m *Monitor) killDescendants(
-	procs []process.Process,
+	tree *processtree.Index,
 	pid int32,
 ) []process.Process {
-	descendants := processtree.Descendants(procs, pid)
+	descendants := tree.Descendants(pid)
 	filtered := make([]process.Process, 0, len(descendants))
 	for _, descendant := range descendants {
 		if !m.cfg.IsProtected(descendant.Name) {

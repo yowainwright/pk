@@ -17,7 +17,6 @@ import (
 	"github.com/yowainwright/pk/internal/config"
 	"github.com/yowainwright/pk/internal/daemon"
 	"github.com/yowainwright/pk/internal/docker"
-	"github.com/yowainwright/pk/internal/dx"
 	"github.com/yowainwright/pk/internal/killer"
 	"github.com/yowainwright/pk/internal/lifecycle"
 	"github.com/yowainwright/pk/internal/process"
@@ -27,12 +26,12 @@ import (
 func TestEnableAndDisableUseBackgroundManager(t *testing.T) {
 	deps := commandDeps(t)
 	var out bytes.Buffer
-	requireNoError(t, run([]string{"enable"}, &out))
+	requireNoError(t, deps.run([]string{"enable"}, &out))
 	if !deps.background.installed {
 		t.Fatal("enable did not install service")
 	}
 	assertMainOutputContains(t, out.String(), "Starts at login")
-	requireNoError(t, run([]string{"disable"}, &out))
+	requireNoError(t, deps.run([]string{"disable"}, &out))
 	if !deps.background.uninstalled {
 		t.Fatal("disable did not remove service")
 	}
@@ -41,7 +40,7 @@ func TestEnableAndDisableUseBackgroundManager(t *testing.T) {
 func TestIgnorePersistsAcrossCommandsAndComposesWithProtected(t *testing.T) {
 	deps := commandDeps(t)
 	for _, args := range [][]string{{"ignore", "postgres", "postgres", "Node"}, {"scan", "--protected", "redis"}} {
-		requireNoError(t, run(args, io.Discard))
+		requireNoError(t, deps.run(args, io.Discard))
 	}
 	for _, name := range []string{"postgres", "Node", "redis", "pk"} {
 		if !deps.cfg.IsProtected(name) {
@@ -69,7 +68,7 @@ func assertIgnoreListAndRemoval(t *testing.T, cfg *config.Config) {
 }
 
 func TestSettingsRejectAmbiguousArguments(t *testing.T) {
-	commandDeps(t)
+	deps := commandDeps(t)
 	cases := [][]string{
 		{"enable", "--apply"},
 		{"disable", "extra"},
@@ -79,9 +78,60 @@ func TestSettingsRejectAmbiguousArguments(t *testing.T) {
 		{"unignore", "--list"},
 	}
 	for _, args := range cases {
-		if err := run(args, io.Discard); err == nil {
+		if err := deps.run(args, io.Discard); err == nil {
 			t.Fatalf("accepted %v", args)
 		}
+	}
+}
+
+func TestCommandsRejectUnexpectedArgumentsBeforeActing(t *testing.T) {
+	cases := [][]string{
+		{"cleanup", "--apply", "typo", "--protected", "node"},
+		{"cleanup", "--apply", "--", "--protected", "node"},
+		{"scan", "extra"},
+		{"monitor", "--apply", "extra"},
+		{"install", "--apply", "extra"},
+		{"__daemon", "extra"},
+		{"__session", "--kind", "session.start", "extra"},
+		{"__session-id", "extra"},
+		{"history", "extra"},
+		{"obs", "extra"},
+		{"uninstall", "--apply"},
+		{"status", "--unexpected"},
+		{"doctor", "extra"},
+	}
+	for _, args := range cases {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			deps := commandDeps(t)
+			err := deps.run(args, io.Discard)
+			rejected := err != nil && strings.Contains(err.Error(), "does not accept")
+			if !rejected {
+				t.Fatalf("expected argument rejection, got %v", err)
+			}
+			acted := deps.scanner.called || deps.killer.called || deps.runner.called
+			if acted {
+				t.Fatal("invalid arguments started process operations")
+			}
+			changedService := deps.background.installed || deps.background.uninstalled
+			if changedService {
+				t.Fatal("invalid arguments changed the background service")
+			}
+			if len(deps.lifecycle.appended) != 0 {
+				t.Fatal("invalid arguments recorded a lifecycle event")
+			}
+		})
+	}
+}
+
+func TestApplicationsKeepIndependentDependencies(t *testing.T) {
+	first := commandDeps(t)
+	expected := errors.New("first application's service error")
+	first.background.err = expected
+	firstApp := first.app()
+	second := commandDeps(t)
+	requireNoError(t, second.app().runStatus())
+	if err := firstApp.runStatus(); !errors.Is(err, expected) {
+		t.Fatalf("application dependencies leaked: %v", err)
 	}
 }
 
@@ -91,13 +141,13 @@ func TestInvalidSavedPreferencesBlockEnableButPermitDisable(t *testing.T) {
 	requireNoError(t, err)
 	requireNoError(t, store.Add([]string{"postgres"}))
 	requireNoError(t, os.WriteFile(store.Path(), []byte("{"), 0o600))
-	if err := run([]string{"enable"}, io.Discard); err == nil {
+	if err := deps.run([]string{"enable"}, io.Discard); err == nil {
 		t.Fatal("enabled with corrupt preferences")
 	}
 	if deps.background.installed {
 		t.Fatal("started service with corrupt preferences")
 	}
-	requireNoError(t, run([]string{"disable"}, io.Discard))
+	requireNoError(t, deps.run([]string{"disable"}, io.Discard))
 	if !deps.background.uninstalled {
 		t.Fatal("invalid config blocked disable")
 	}
@@ -121,11 +171,6 @@ func run(args []string, out io.Writer) error {
 
 func cleanupConfig(args []string) (*config.Config, cleanupOptions, error) {
 	return cleanupConfigWithOutput(args, io.Discard)
-}
-
-func exitOnError(err error) {
-	ui := dx.New(dx.Config{Err: os.Stderr, Timestamps: true})
-	application{ctx: context.Background(), ui: ui, out: os.Stdout}.exitOnError(err)
 }
 
 func TestRunPrintsVersion(t *testing.T) {
@@ -191,7 +236,7 @@ func TestRunWithoutArgsWritesHelp(t *testing.T) {
 	deps := commandDeps(t)
 	var out bytes.Buffer
 
-	err := run(nil, &out)
+	err := deps.run(nil, &out)
 	if err != nil {
 		t.Fatalf("run help: %v", err)
 	}
@@ -204,10 +249,10 @@ func TestRunWithoutArgsWritesHelp(t *testing.T) {
 }
 
 func TestRunWritesCommandHelp(t *testing.T) {
-	commandDeps(t)
+	deps := commandDeps(t)
 	var out bytes.Buffer
 
-	err := run([]string{"cleanup", "--help"}, &out)
+	err := deps.run([]string{"cleanup", "--help"}, &out)
 	if err != nil {
 		t.Fatalf("run cleanup help: %v", err)
 	}
@@ -217,10 +262,10 @@ func TestRunWritesCommandHelp(t *testing.T) {
 }
 
 func TestRunWritesCommandHelpAfterOptions(t *testing.T) {
-	commandDeps(t)
+	deps := commandDeps(t)
 	var out bytes.Buffer
 
-	err := run([]string{"cleanup", "--apply", "--help"}, &out)
+	err := deps.run([]string{"cleanup", "--apply", "--help"}, &out)
 	if err != nil {
 		t.Fatalf("run cleanup help: %v", err)
 	}
@@ -230,9 +275,9 @@ func TestRunWritesCommandHelpAfterOptions(t *testing.T) {
 }
 
 func TestRunRejectsUnknownHelpTopic(t *testing.T) {
-	commandDeps(t)
+	deps := commandDeps(t)
 
-	err := run([]string{"help", "missing"}, &bytes.Buffer{})
+	err := deps.run([]string{"help", "missing"}, &bytes.Buffer{})
 
 	if err == nil {
 		t.Fatal("expected unknown help topic error")
@@ -254,7 +299,7 @@ func TestRunScanWritesReports(t *testing.T) {
 	deps.scanner.reports = []scan.Report{commandReport()}
 	var out bytes.Buffer
 
-	err := run([]string{"scan"}, &out)
+	err := deps.run([]string{"scan"}, &out)
 	if err != nil {
 		t.Fatalf("run scan: %v", err)
 	}
@@ -268,7 +313,7 @@ func TestRunScanReturnsScannerError(t *testing.T) {
 	deps.scanner.err = errors.New("scan failed")
 	var out bytes.Buffer
 
-	err := run([]string{"scan"}, &out)
+	err := deps.run([]string{"scan"}, &out)
 
 	if err == nil {
 		t.Fatal("expected scan error")
@@ -280,14 +325,8 @@ func TestApplicationCancellationStopsScan(t *testing.T) {
 	deps.scanner.requireCanceled = true
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	var out bytes.Buffer
-
-	app, args, err := newApplication(ctx, []string{"scan"}, strings.NewReader(""), &out, io.Discard)
-	if err != nil {
-		t.Fatalf("new application: %v", err)
-	}
-	err = app.run(args)
-	if !errors.Is(err, context.Canceled) {
+	app, args := deps.testApplication(t, ctx, "scan")
+	if err := app.run(args); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected canceled scan, got %v", err)
 	}
 }
@@ -297,7 +336,7 @@ func TestApplicationCancellationStopsInstall(t *testing.T) {
 	deps.background.installStarted = make(chan struct{})
 	deps.background.waitForCancellation = true
 	ctx, cancel := context.WithCancel(context.Background())
-	app, args := testApplication(t, ctx, "install", "--apply")
+	app, args := deps.testApplication(t, ctx, "install", "--apply")
 	finished := make(chan error, 1)
 	go func() { finished <- app.run(args) }()
 	assertCanceled(t, deps.background.installStarted)
@@ -307,9 +346,13 @@ func TestApplicationCancellationStopsInstall(t *testing.T) {
 	}
 }
 
-func testApplication(t *testing.T, ctx context.Context, args ...string) (application, []string) {
+func (d *commandTestDeps) testApplication(
+	t *testing.T,
+	ctx context.Context,
+	args ...string,
+) (application, []string) {
 	t.Helper()
-	app, commandArgs, err := newApplication(
+	app, commandArgs, err := d.newApplication(
 		ctx, args, strings.NewReader(""), io.Discard, io.Discard,
 	)
 	if err != nil {
@@ -319,10 +362,10 @@ func testApplication(t *testing.T, ctx context.Context, args ...string) (applica
 }
 
 func TestRunScanReturnsParseError(t *testing.T) {
-	commandDeps(t)
+	deps := commandDeps(t)
 	var out bytes.Buffer
 
-	err := run([]string{"scan", "-cpu", "bad"}, &out)
+	err := deps.run([]string{"scan", "-cpu", "bad"}, &out)
 
 	if err == nil {
 		t.Fatal("expected parse error")
@@ -334,7 +377,7 @@ func TestRunCleanupDefaultsToDryRun(t *testing.T) {
 	deps.scanner.reports = []scan.Report{commandReport()}
 	var out bytes.Buffer
 
-	err := run([]string{"cleanup"}, &out)
+	err := deps.run([]string{"cleanup"}, &out)
 	if err != nil {
 		t.Fatalf("run cleanup: %v", err)
 	}
@@ -350,7 +393,7 @@ func TestRunCleanupContainersScopeSkipsProcessScan(t *testing.T) {
 	deps.scanner.err = errors.New("scan should not run")
 	var out bytes.Buffer
 
-	err := run([]string{"cleanup", "--scope", "containers"}, &out)
+	err := deps.run([]string{"cleanup", "--scope", "containers"}, &out)
 	if err != nil {
 		t.Fatalf("run container cleanup: %v", err)
 	}
@@ -365,7 +408,7 @@ func TestRunCleanupProcessesScopeSkipsDocker(t *testing.T) {
 	deps.docker.err = errors.New("docker should not run")
 	var out bytes.Buffer
 
-	err := run([]string{"cleanup", "--scope", "processes"}, &out)
+	err := deps.run([]string{"cleanup", "--scope", "processes"}, &out)
 	if err != nil {
 		t.Fatalf("run process cleanup: %v", err)
 	}
@@ -377,7 +420,7 @@ func TestRunCleanupReturnsAuditStoreError(t *testing.T) {
 	deps.auditStoreErr = errors.New("audit unavailable")
 	var out bytes.Buffer
 
-	err := run([]string{"cleanup"}, &out)
+	err := deps.run([]string{"cleanup"}, &out)
 
 	if err == nil {
 		t.Fatal("expected audit store error")
@@ -390,7 +433,7 @@ func TestRunCleanupReturnsRecorderError(t *testing.T) {
 	deps.audit.err = errors.New("disk full")
 	var out bytes.Buffer
 
-	err := run([]string{"cleanup"}, &out)
+	err := deps.run([]string{"cleanup"}, &out)
 
 	if err == nil {
 		t.Fatal("expected recorder error")
@@ -402,7 +445,7 @@ func TestRunCleanupApplyKillsTarget(t *testing.T) {
 	deps.scanner.reports = []scan.Report{commandReport()}
 	var out bytes.Buffer
 
-	err := run([]string{"cleanup", "--apply"}, &out)
+	err := deps.run([]string{"cleanup", "--apply"}, &out)
 	if err != nil {
 		t.Fatalf("run cleanup: %v", err)
 	}
@@ -419,7 +462,7 @@ func TestRunCleanupIncludesDockerTargets(t *testing.T) {
 	deps.docker.containers = []docker.Container{testContainer()}
 	var out bytes.Buffer
 
-	err := run([]string{"cleanup", "--apply"}, &out)
+	err := deps.run([]string{"cleanup", "--apply"}, &out)
 	if err != nil {
 		t.Fatalf("run cleanup: %v", err)
 	}
@@ -438,7 +481,7 @@ func TestRunCleanupIgnoresUnavailableDockerDaemon(t *testing.T) {
 	deps.docker.err = errors.New(message)
 	var out bytes.Buffer
 
-	err := run([]string{"cleanup"}, &out)
+	err := deps.run([]string{"cleanup"}, &out)
 	if err != nil {
 		t.Fatalf("run cleanup: %v", err)
 	}
@@ -453,7 +496,7 @@ func TestRunCleanupReturnsDockerListErrors(t *testing.T) {
 	deps.docker.err = errors.New("permission denied")
 	var out bytes.Buffer
 
-	err := run([]string{"cleanup"}, &out)
+	err := deps.run([]string{"cleanup"}, &out)
 
 	if err == nil {
 		t.Fatal("expected docker list error")
@@ -493,7 +536,7 @@ func TestCleanupLoopStopsWhenCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := cleanupLoop(ctx, nil, cfg, options, &bytes.Buffer{})
+	err := commandDeps(t).app().cleanupLoop(ctx, nil, cfg, options, &bytes.Buffer{})
 
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected canceled context, got %v", err)
@@ -507,7 +550,8 @@ func TestCleanupLoopRunsOnTicks(t *testing.T) {
 	ticks := make(chan time.Time, 1)
 	ticks <- time.Now()
 
-	err := cleanupLoop(context.Background(), ticks, cfg, cleanupOptions{}, &bytes.Buffer{})
+	err := deps.app().
+		cleanupLoop(context.Background(), ticks, cfg, cleanupOptions{}, &bytes.Buffer{})
 
 	if err == nil {
 		t.Fatal("expected scan error")
@@ -519,7 +563,7 @@ func TestRunHistoryReturnsAuditError(t *testing.T) {
 	deps.audit.err = errors.New("read failed")
 	var out bytes.Buffer
 
-	err := run([]string{"history"}, &out)
+	err := deps.run([]string{"history"}, &out)
 
 	if err == nil {
 		t.Fatal("expected audit error")
@@ -531,7 +575,7 @@ func TestRunHistoryWritesAuditEvents(t *testing.T) {
 	deps.audit.events = []audit.Event{{Command: "cleanup", Name: "node"}}
 	var out bytes.Buffer
 
-	err := run([]string{"history"}, &out)
+	err := deps.run([]string{"history"}, &out)
 	if err != nil {
 		t.Fatalf("run history: %v", err)
 	}
@@ -544,7 +588,7 @@ func TestRunInstallInstallsBackgroundService(t *testing.T) {
 	deps := commandDeps(t)
 	var out bytes.Buffer
 
-	err := run([]string{"install", "--apply"}, &out)
+	err := deps.run([]string{"install", "--apply"}, &out)
 	if err != nil {
 		t.Fatalf("run install: %v", err)
 	}
@@ -559,7 +603,7 @@ func TestRunInstallInstallsBackgroundService(t *testing.T) {
 func TestRunInstallRequiresApply(t *testing.T) {
 	deps := commandDeps(t)
 
-	err := run([]string{"install"}, &bytes.Buffer{})
+	err := deps.run([]string{"install"}, &bytes.Buffer{})
 
 	if err == nil {
 		t.Fatal("expected install to require apply")
@@ -573,7 +617,7 @@ func TestRunUninstallRemovesBackgroundService(t *testing.T) {
 	deps := commandDeps(t)
 	var out bytes.Buffer
 
-	err := run([]string{"uninstall"}, &out)
+	err := deps.run([]string{"uninstall"}, &out)
 	if err != nil {
 		t.Fatalf("run uninstall: %v", err)
 	}
@@ -587,7 +631,7 @@ func TestRunUninstallReturnsManagerErrors(t *testing.T) {
 	deps.backgroundErr = errors.New("manager failed")
 	var out bytes.Buffer
 
-	err := run([]string{"uninstall"}, &out)
+	err := deps.run([]string{"uninstall"}, &out)
 
 	if err == nil {
 		t.Fatal("expected manager error")
@@ -599,7 +643,7 @@ func TestRunStatusPrintsBackgroundStatus(t *testing.T) {
 	deps.background.status = "active"
 	var out bytes.Buffer
 
-	err := run([]string{"status"}, &out)
+	err := deps.run([]string{"status"}, &out)
 	if err != nil {
 		t.Fatalf("run status: %v", err)
 	}
@@ -613,7 +657,7 @@ func TestRunStatusReturnsStatusErrors(t *testing.T) {
 	deps.background.err = errors.New("status failed")
 	var out bytes.Buffer
 
-	err := run([]string{"status"}, &out)
+	err := deps.run([]string{"status"}, &out)
 
 	if err == nil {
 		t.Fatal("expected status error")
@@ -625,7 +669,7 @@ func TestRunObsWritesLifecycleState(t *testing.T) {
 	setupObsState(deps)
 	var out bytes.Buffer
 
-	err := run([]string{"obs"}, &out)
+	err := deps.run([]string{"obs"}, &out)
 	if err != nil {
 		t.Fatalf("run obs: %v", err)
 	}
@@ -683,10 +727,10 @@ func obsDaemonState() lifecycle.DaemonState {
 }
 
 func TestRunSessionIDWritesID(t *testing.T) {
-	commandDeps(t)
+	deps := commandDeps(t)
 	var out bytes.Buffer
 
-	err := run([]string{"__session-id"}, &out)
+	err := deps.run([]string{"__session-id"}, &out)
 	if err != nil {
 		t.Fatalf("run session id: %v", err)
 	}
@@ -699,7 +743,7 @@ func TestRunSessionAppendsLifecycleEvent(t *testing.T) {
 	deps := commandDeps(t)
 	var out bytes.Buffer
 
-	err := run(sessionArgs(), &out)
+	err := deps.run(sessionArgs(), &out)
 	if err != nil {
 		t.Fatalf("run session event: %v", err)
 	}
@@ -712,12 +756,12 @@ func TestRunSessionAppendsLifecycleEvent(t *testing.T) {
 }
 
 func TestRunSessionRejectsOutOfRangePID(t *testing.T) {
-	commandDeps(t)
+	deps := commandDeps(t)
 	var out bytes.Buffer
 	args := sessionArgs()
 	args = append(args, "--process-pid", "2147483648")
 
-	err := run(args, &out)
+	err := deps.run(args, &out)
 	if err == nil {
 		t.Fatal("expected pid range error")
 	}
@@ -764,7 +808,7 @@ func sessionArgs() []string {
 func TestRunDaemonUsesRunner(t *testing.T) {
 	deps := commandDeps(t)
 
-	err := run([]string{"__daemon", "-interval", "1ms"}, &bytes.Buffer{})
+	err := deps.run([]string{"__daemon", "-interval", "1ms"}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("run daemon: %v", err)
 	}
@@ -783,7 +827,7 @@ func TestRunDoctorWritesShareableDiagnostics(t *testing.T) {
 	deps.audit.events = []audit.Event{{}, {}}
 	var out bytes.Buffer
 
-	err := run([]string{"doctor"}, &out)
+	err := deps.run([]string{"doctor"}, &out)
 	if err != nil {
 		t.Fatalf("run doctor: %v", err)
 	}
@@ -799,7 +843,7 @@ func TestRunDoctorKeepsCheckErrorsPrivate(t *testing.T) {
 	deps.audit.err = errors.New("private audit path")
 	var out bytes.Buffer
 
-	if err := run([]string{"doctor"}, &out); err != nil {
+	if err := deps.run([]string{"doctor"}, &out); err != nil {
 		t.Fatalf("run doctor: %v", err)
 	}
 	assertMainOutputContains(t, out.String(), "background service: error")
@@ -821,7 +865,7 @@ func TestRunInstallReturnsManagerErrors(t *testing.T) {
 	deps.backgroundErr = errors.New("manager failed")
 	var out bytes.Buffer
 
-	err := run([]string{"install", "--apply"}, &out)
+	err := deps.run([]string{"install", "--apply"}, &out)
 
 	if !errors.Is(err, deps.backgroundErr) {
 		t.Fatalf("expected manager error, got %v", err)
@@ -829,10 +873,10 @@ func TestRunInstallReturnsManagerErrors(t *testing.T) {
 }
 
 func TestRunMonitorReturnsParseError(t *testing.T) {
-	commandDeps(t)
+	deps := commandDeps(t)
 	var out bytes.Buffer
 
-	err := run([]string{"monitor", "-interval", "bad"}, &out)
+	err := deps.run([]string{"monitor", "-interval", "bad"}, &out)
 
 	if err == nil {
 		t.Fatal("expected parse error")
@@ -843,7 +887,7 @@ func TestRunMonitorUsesRunner(t *testing.T) {
 	deps := commandDeps(t)
 	var out bytes.Buffer
 
-	err := run([]string{"monitor", "-interval", "1ms"}, &out)
+	err := deps.run([]string{"monitor", "-interval", "1ms"}, &out)
 	if err != nil {
 		t.Fatalf("run monitor: %v", err)
 	}
@@ -858,7 +902,7 @@ func TestRunMonitorUsesRunner(t *testing.T) {
 func TestRunMonitorApplyUsesActiveMode(t *testing.T) {
 	deps := commandDeps(t)
 
-	err := run([]string{"monitor", "--apply"}, &bytes.Buffer{})
+	err := deps.run([]string{"monitor", "--apply"}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("run monitor: %v", err)
 	}
@@ -868,9 +912,10 @@ func TestRunMonitorApplyUsesActiveMode(t *testing.T) {
 }
 
 func TestNewMonitorReturnsMonitor(t *testing.T) {
-	commandDeps(t)
+	deps := commandDeps(t)
+	deps.dependencies.newRunner = nil
 
-	monitor := newMonitor(&config.Config{}, monitorOptions{}, nil)
+	monitor := deps.app().newMonitor(&config.Config{}, monitorOptions{}, nil)
 
 	if monitor == nil {
 		t.Fatal("expected monitor")
@@ -880,7 +925,7 @@ func TestNewMonitorReturnsMonitor(t *testing.T) {
 func TestNotifyKilledSendsNotification(t *testing.T) {
 	deps := commandDeps(t)
 
-	if err := notifyKilled("node", 42); err != nil {
+	if err := deps.app().notifyKilled("node", 42); err != nil {
 		t.Fatalf("notify killed: %v", err)
 	}
 
@@ -893,29 +938,26 @@ func TestNotifyKilledSendsNotification(t *testing.T) {
 }
 
 func TestNotifyKilledReturnsNotificationErrors(t *testing.T) {
-	commandDeps(t)
+	deps := commandDeps(t)
 	expected := errors.New("notification failed")
-	sendNotification = func(title string, message string) error {
+	deps.dependencies.send = func(title string, message string) error {
 		return expected
 	}
 
-	if err := notifyKilled("node", 42); !errors.Is(err, expected) {
+	if err := deps.app().notifyKilled("node", 42); !errors.Is(err, expected) {
 		t.Fatalf("expected notification error, got %v", err)
 	}
 }
 
 func TestExitOnErrorIgnoresExpectedErrors(t *testing.T) {
-	oldExitProcess := exitProcess
-	defer func() {
-		exitProcess = oldExitProcess
-	}()
+	app := commandDeps(t).app()
 	exited := false
-	exitProcess = func(int) {
+	app.deps.exitFunc = func(int) {
 		exited = true
 	}
 
-	exitOnError(nil)
-	exitOnError(context.Canceled)
+	app.exitOnError(nil)
+	app.exitOnError(context.Canceled)
 
 	if exited {
 		t.Fatal("expected no exit for expected errors")
@@ -923,16 +965,13 @@ func TestExitOnErrorIgnoresExpectedErrors(t *testing.T) {
 }
 
 func TestExitOnErrorExitsForUnexpectedErrors(t *testing.T) {
-	oldExitProcess := exitProcess
-	defer func() {
-		exitProcess = oldExitProcess
-	}()
+	app := commandDeps(t).app()
 	var code int
-	exitProcess = func(status int) {
+	app.deps.exitFunc = func(status int) {
 		code = status
 	}
 
-	exitOnError(errors.New("boom"))
+	app.exitOnError(errors.New("boom"))
 
 	if code != 1 {
 		t.Fatalf("expected exit code 1, got %d", code)
@@ -940,12 +979,11 @@ func TestExitOnErrorExitsForUnexpectedErrors(t *testing.T) {
 }
 
 func TestHandleSignalsCancelsAndRestoresDefaults(t *testing.T) {
-	saved := saveCommandDeps()
-	t.Cleanup(saved.restore)
+	app := commandDeps(t).app()
 	harness := newSignalHarness()
-	harness.install()
+	harness.install(&app.deps)
 	canceled := make(chan struct{})
-	restore := handleSignals(func() { close(canceled) })
+	restore := app.handleSignals(func() { close(canceled) })
 	t.Cleanup(restore)
 	harness.signalChannel <- syscall.SIGTERM
 	assertCanceled(t, canceled)
@@ -965,18 +1003,18 @@ func newSignalHarness() *signalHarness {
 	return &signalHarness{stopped: make(chan struct{})}
 }
 
-func (h *signalHarness) install() {
-	notifySignal = func(channel chan<- os.Signal, signals ...os.Signal) {
+func (h *signalHarness) install(deps *commandDependencies) {
+	deps.notifySignalFunc = func(channel chan<- os.Signal, signals ...os.Signal) {
 		h.signalChannel = channel
 	}
-	stopSignal = func(chan<- os.Signal) { close(h.stopped) }
-	resetSignals = func(signals ...os.Signal) { h.reset = signals }
+	deps.stopSignalFunc = func(chan<- os.Signal) { close(h.stopped) }
+	deps.resetSignalsFunc = func(signals ...os.Signal) { h.reset = signals }
 }
 
 func TestRunRejectsImplicitMonitorFlags(t *testing.T) {
 	deps := commandDeps(t)
 
-	err := run([]string{"-cpu", "90"}, &bytes.Buffer{})
+	err := deps.run([]string{"-cpu", "90"}, &bytes.Buffer{})
 
 	if err == nil {
 		t.Fatal("expected top-level flag error")
@@ -1191,6 +1229,7 @@ func (s *fakeLifecycleStore) SaveState(state lifecycle.State) error {
 }
 
 type commandTestDeps struct {
+	dependencies        commandDependencies
 	scanner             *fakeScanner
 	audit               *fakeAuditStore
 	auditStoreErr       error
@@ -1213,7 +1252,7 @@ func commandDeps(t *testing.T) *commandTestDeps {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	deps := &commandTestDeps{}
+	deps := &commandTestDeps{dependencies: defaultDependencies()}
 	deps.scanner = &fakeScanner{}
 	deps.audit = &fakeAuditStore{}
 	deps.lifecycle = newFakeLifecycleStore()
@@ -1227,110 +1266,48 @@ func commandDeps(t *testing.T) *commandTestDeps {
 
 func installCommandDeps(t *testing.T, deps *commandTestDeps) {
 	t.Helper()
-	oldDeps := saveCommandDeps()
-	t.Cleanup(oldDeps.restore)
-	newProcessLister = func() process.Lister { return fakeCommandLister{} }
-	newProcessScanner = func(cfg *config.Config, lister process.Lister) processScanner {
+	deps.dependencies.newLister = func() process.Lister { return fakeCommandLister{} }
+	deps.dependencies.newScanner = func(cfg *config.Config, lister process.Lister) processScanner {
 		deps.cfg = cfg
 		return deps.scanner
 	}
-	newAuditStore = func() (auditStore, error) {
+	deps.dependencies.newAudit = func() (auditStore, error) {
 		return deps.audit, deps.auditStoreErr
 	}
-	newLifecycleStore = func() (lifecycleStore, error) {
+	deps.dependencies.newLifecycle = func() (lifecycleStore, error) {
 		return deps.lifecycle, deps.lifecycleStoreErr
 	}
-	newProcessKiller = func() killer.Killer { return deps.killer }
-	newDockerClient = func() docker.Client { return deps.docker }
-	newMonitorRunner = func(
+	deps.dependencies.newKiller = func() killer.Killer { return deps.killer }
+	deps.dependencies.newDocker = func() docker.Client { return deps.docker }
+	deps.dependencies.newRunner = func(
 		cfg *config.Config,
 		options monitorOptions,
 		logger *slog.Logger,
-	) monitorRunner {
+	) commandRunner {
 		deps.cfg = cfg
 		deps.monitorOptions = options
 		return deps.runner
 	}
-	newDaemonRunner = func(
+	deps.dependencies.newDaemon = func(
 		cfg *config.Config,
 		store daemon.Store,
 		log daemon.Audit,
-	) daemonRunner {
+	) commandRunner {
 		deps.cfg = cfg
 		return deps.runner
 	}
-	newBackgroundManager = func() (backgroundManager, error) {
+	deps.dependencies.newBackground = func() (backgroundManager, error) {
 		return deps.background, deps.backgroundErr
 	}
-	readCreateTime = func(ctx context.Context, pid int32) (int64, error) {
+	deps.dependencies.readCreateTime = func(ctx context.Context, pid int32) (int64, error) {
 		deps.readCreateTimePID = pid
 		return 1234, nil
 	}
-	sendNotification = func(title string, message string) error {
+	deps.dependencies.send = func(title string, message string) error {
 		deps.notificationTitle = title
 		deps.notificationMessage = message
 		return nil
 	}
-	handleShutdownSignal = func(cancel context.CancelFunc) func() { return func() {} }
-}
-
-type savedCommandDeps struct {
-	newLister        func() process.Lister
-	newScanner       func(*config.Config, process.Lister) processScanner
-	newAudit         func() (auditStore, error)
-	newLifecycle     func() (lifecycleStore, error)
-	newKiller        func() killer.Killer
-	newDocker        func() docker.Client
-	newRunner        func(*config.Config, monitorOptions, *slog.Logger) monitorRunner
-	newDaemon        func(*config.Config, daemon.Store, daemon.Audit) daemonRunner
-	newBackground    func() (backgroundManager, error)
-	readCreateTime   func(context.Context, int32) (int64, error)
-	send             func(string, string) error
-	handleSignalFunc func(context.CancelFunc) func()
-	notifySignalFunc func(chan<- os.Signal, ...os.Signal)
-	stopSignalFunc   func(chan<- os.Signal)
-	resetSignalsFunc func(...os.Signal)
-	exitFunc         func(int)
-}
-
-func saveCommandDeps() savedCommandDeps {
-	return savedCommandDeps{
-		newLister:        newProcessLister,
-		newScanner:       newProcessScanner,
-		newAudit:         newAuditStore,
-		newLifecycle:     newLifecycleStore,
-		newKiller:        newProcessKiller,
-		newDocker:        newDockerClient,
-		newRunner:        newMonitorRunner,
-		newDaemon:        newDaemonRunner,
-		newBackground:    newBackgroundManager,
-		readCreateTime:   readCreateTime,
-		send:             sendNotification,
-		handleSignalFunc: handleShutdownSignal,
-		notifySignalFunc: notifySignal,
-		stopSignalFunc:   stopSignal,
-		resetSignalsFunc: resetSignals,
-		exitFunc:         exitProcess,
-	}
-}
-
-func (d savedCommandDeps) restore() {
-	newProcessLister = d.newLister
-	newProcessScanner = d.newScanner
-	newAuditStore = d.newAudit
-	newLifecycleStore = d.newLifecycle
-	newProcessKiller = d.newKiller
-	newDockerClient = d.newDocker
-	newMonitorRunner = d.newRunner
-	newDaemonRunner = d.newDaemon
-	newBackgroundManager = d.newBackground
-	readCreateTime = d.readCreateTime
-	sendNotification = d.send
-	handleShutdownSignal = d.handleSignalFunc
-	notifySignal = d.notifySignalFunc
-	stopSignal = d.stopSignalFunc
-	resetSignals = d.resetSignalsFunc
-	exitProcess = d.exitFunc
 }
 
 type fakeCommandLister struct{}
@@ -1388,4 +1365,41 @@ func waitForCommand(t *testing.T, finished <-chan error) error {
 		t.Fatal("expected command to finish")
 		return nil
 	}
+}
+
+func (d *commandTestDeps) app() application {
+	app, _, _ := d.newApplication(
+		context.Background(),
+		nil,
+		strings.NewReader(""),
+		io.Discard,
+		io.Discard,
+	)
+	return app
+}
+
+func (d *commandTestDeps) newApplication(
+	ctx context.Context,
+	args []string,
+	in io.Reader,
+	out io.Writer,
+	errOut io.Writer,
+) (application, []string, error) {
+	app, commandArgs, err := newApplication(ctx, args, in, out, errOut)
+	app.deps = d.dependencies
+	return app, commandArgs, err
+}
+
+func (d *commandTestDeps) run(args []string, out io.Writer) error {
+	app, commandArgs, err := d.newApplication(
+		context.Background(),
+		args,
+		strings.NewReader(""),
+		out,
+		io.Discard,
+	)
+	if err != nil {
+		return err
+	}
+	return app.run(commandArgs)
 }

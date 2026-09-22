@@ -256,6 +256,12 @@ Choose what `cleanup` considers. The default is `all`.
 Use `processes` to leave containers alone, or `containers` to check only local
 Docker containers. `all` checks both.
 
+<!-- Docker endpoint validation and pinning from internal/docker/docker.go -->
+
+Docker cleanup requires a Unix socket endpoint. Remote SSH and TCP endpoints
+are rejected. Each cleanup pass uses the same endpoint for listing and stopping
+containers.
+
 example
 ```sh
 pk cleanup --scope containers
@@ -281,6 +287,12 @@ not accept `--watch`. See the [cleanup loop](cmd/pk/main.go).
 
 Set the CPU percentage threshold for `scan`, process `cleanup`, and `monitor`.
 The default is `80`.
+
+<!-- CPU sampling behavior from internal/process/process.go -->
+
+CPU usage measures activity between samples. The first scan takes two samples
+at least 100 ms apart; `monitor` then samples at its configured interval.
+A reused process ID starts with a fresh baseline.
 
 example
 ```sh

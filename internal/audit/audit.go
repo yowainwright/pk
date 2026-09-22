@@ -1,14 +1,15 @@
 package audit
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -73,6 +74,11 @@ func DefaultPath() (string, error) {
 }
 
 func (l *Log) Record(event Event) error {
+	file, err := l.lock()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
 	event = l.withTimestamp(event)
 	events, err := l.Events()
 	if err != nil {
@@ -120,9 +126,6 @@ func (l *Log) prune(events []Event) []Event {
 }
 
 func (l *Log) write(events []Event) error {
-	if err := ensurePrivateDir(filepath.Dir(l.path)); err != nil {
-		return fmt.Errorf("creating audit dir: %w", err)
-	}
 	data, err := encodeEvents(events)
 	if err != nil {
 		return err
@@ -177,24 +180,19 @@ func closeAfterError(file *os.File, err error) error {
 }
 
 func readEvents(r io.Reader) ([]Event, error) {
-	scanner := bufio.NewScanner(r)
+	decoder := json.NewDecoder(r)
 	events := make([]Event, 0)
-	for scanner.Scan() {
-		event, err := parseLine(scanner.Bytes())
+	for {
+		var event Event
+		err := decoder.Decode(&event)
+		if errors.Is(err, io.EOF) {
+			return events, nil
+		}
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("parsing audit event: %w", err)
 		}
 		events = append(events, event)
 	}
-	return events, scanner.Err()
-}
-
-func parseLine(line []byte) (Event, error) {
-	var event Event
-	if err := json.Unmarshal(line, &event); err != nil {
-		return Event{}, fmt.Errorf("parsing audit event: %w", err)
-	}
-	return event, nil
 }
 
 func recentEvents(events []Event, cutoff time.Time) []Event {
@@ -259,4 +257,43 @@ func writeEvent(w io.Writer, event Event) error {
 		return fmt.Errorf("writing audit event: %w", err)
 	}
 	return nil
+}
+
+func (l *Log) lock() (*os.File, error) {
+	if err := ensurePrivateDir(filepath.Dir(l.path)); err != nil {
+		return nil, fmt.Errorf("creating audit dir: %w", err)
+	}
+	file, err := openAuditLock(l.path + ".lock")
+	if err != nil {
+		return nil, fmt.Errorf("opening audit lock: %w", err)
+	}
+	if err := lockAudit(file); err != nil {
+		return nil, closeAfterError(file, fmt.Errorf("locking audit log: %w", err))
+	}
+	return file, nil
+}
+
+func openAuditLock(path string) (*os.File, error) {
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	flags := os.O_CREATE | os.O_RDWR | syscall.O_NOFOLLOW | syscall.O_NONBLOCK
+	return root.OpenFile(filepath.Base(path), flags, privateFileMode)
+}
+
+func lockAudit(file *os.File) error {
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("audit lock must be a regular file")
+	}
+	fd := file.Fd()
+	if fd > uintptr(math.MaxInt) {
+		return fmt.Errorf("file descriptor out of range: %d", fd)
+	}
+	return syscall.Flock(int(fd), syscall.LOCK_EX)
 }

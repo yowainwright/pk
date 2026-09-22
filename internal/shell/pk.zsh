@@ -69,7 +69,7 @@ _pk_setup() {
   [[ -o interactive ]] || return 0
   [[ -z "${PK_DISABLE_SESSION:-}" ]] || return 0
   [[ -z "${PK_TERMINAL_SESSION_ID:-}" ]] || return 0
-  typeset -g _pk_bin="__PK_EXECUTABLE__"
+  typeset -g _pk_bin=__PK_EXECUTABLE__
   typeset -g _pk_plugin="$HOME/.config/pk/shell/pk.zsh"
   [[ -x "$_pk_bin" ]] || return 0
   autoload -Uz add-zsh-hook || return 0

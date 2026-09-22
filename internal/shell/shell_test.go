@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -295,4 +296,85 @@ func assertMode(t *testing.T, path string, expected os.FileMode) {
 	if info.Mode().Perm() != expected {
 		t.Fatalf("expected mode %o, got %o", expected, info.Mode().Perm())
 	}
+}
+
+func TestInstallAndUninstallPreserveSymlinkedZshrc(t *testing.T) {
+	for _, relative := range []bool{false, true} {
+		t.Run(fmt.Sprint(relative), func(t *testing.T) {
+			installer := testInstaller(t)
+			original := "alias ll='ls -la'\n"
+			target, link := symlinkedZshrc(t, installer, original, relative)
+			if err := installer.Install(); err != nil {
+				t.Fatal(err)
+			}
+			assertFileContains(t, target, installer.SourceLine())
+			if err := installer.Uninstall(); err != nil {
+				t.Fatal(err)
+			}
+			assertPreservedZshrc(t, installer, original, target, link)
+		})
+	}
+}
+
+func symlinkedZshrc(
+	t *testing.T,
+	installer Installer,
+	original string,
+	relative bool,
+) (string, string) {
+	t.Helper()
+	target := filepath.Join(t.TempDir(), "zshrc")
+	if err := os.WriteFile(target, []byte(original), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	link := zshrcLink(t, installer.Home, target, relative)
+	if err := os.Symlink(link, installer.ZshrcPath()); err != nil {
+		t.Fatal(err)
+	}
+	return target, link
+}
+
+func zshrcLink(t *testing.T, home string, target string, relative bool) string {
+	t.Helper()
+	if !relative {
+		return target
+	}
+	link, err := filepath.Rel(home, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return link
+}
+
+func assertPreservedZshrc(
+	t *testing.T,
+	installer Installer,
+	original string,
+	target string,
+	link string,
+) {
+	t.Helper()
+	if readFile(t, target) != original {
+		t.Fatal("changed existing shell configuration")
+	}
+	got, err := os.Readlink(installer.ZshrcPath())
+	intact := err == nil && got == link
+	if !intact {
+		t.Fatalf("replaced symlink: %q, %v", got, err)
+	}
+	assertMode(t, target, 0o640)
+}
+
+func TestInstalledPluginPreservesExecutableMetacharacters(t *testing.T) {
+	installer := testInstaller(t)
+	installer.Executable = filepath.Join(installer.Home, "pk '$HOME `literal` \"quoted\"")
+	if err := os.WriteFile(installer.Executable, []byte(zshFixtureBinary), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := installer.Install(); err != nil {
+		t.Fatal(err)
+	}
+	events := filepath.Join(installer.Home, "events")
+	runZshScript(t, installer, events, `source "$1"`, "")
+	assertZshEventCount(t, readFile(t, events), "session.start", 1)
 }

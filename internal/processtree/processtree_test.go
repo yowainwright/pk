@@ -15,7 +15,7 @@ func TestDescendantsReturnsNestedChildren(t *testing.T) {
 		testProcess(5, 9),
 	}
 
-	descendants := Descendants(procs, 1)
+	descendants := NewIndex(procs).Descendants(1)
 
 	assertPIDs(t, descendants, 2, 4, 3)
 }
@@ -50,7 +50,7 @@ func TestDescendantsIgnoresCycles(t *testing.T) {
 		testProcess(1, 2),
 	}
 
-	descendants := Descendants(procs, 1)
+	descendants := NewIndex(procs).Descendants(1)
 
 	assertPIDs(t, descendants, 2)
 }
@@ -80,4 +80,46 @@ func pids(procs []process.Process) []int32 {
 		result = append(result, proc.PID)
 	}
 	return result
+}
+
+func TestIndexKeepsTraversalsIndependent(t *testing.T) {
+	procs := []process.Process{
+		testProcess(1, 3),
+		testProcess(2, 1),
+		testProcess(3, 2),
+	}
+	tree := NewIndex(procs)
+	assertPIDs(t, tree.Descendants(1), 2, 3)
+	assertPIDs(t, tree.Descendants(2), 3, 1)
+	assertPIDs(t, tree.Descendants(1), 2, 3)
+}
+
+func BenchmarkSnapshotDescendants(b *testing.B) {
+	procs := make([]process.Process, 0, 1000)
+	for pid := int32(1); pid <= 1000; pid++ {
+		procs = append(procs, testProcess(pid, pid/2))
+	}
+	b.Run("rebuild-per-root", func(b *testing.B) {
+		for b.Loop() {
+			rebuildForEachRoot(procs)
+		}
+	})
+	b.Run("index-per-snapshot", func(b *testing.B) {
+		for b.Loop() {
+			indexOncePerSnapshot(procs)
+		}
+	})
+}
+
+func rebuildForEachRoot(procs []process.Process) {
+	for _, proc := range procs {
+		NewIndex(procs).Descendants(proc.PID)
+	}
+}
+
+func indexOncePerSnapshot(procs []process.Process) {
+	tree := NewIndex(procs)
+	for _, proc := range procs {
+		tree.Descendants(proc.PID)
+	}
 }

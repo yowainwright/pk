@@ -6,11 +6,28 @@ import (
 	"github.com/yowainwright/pk/internal/process"
 )
 
-func Descendants(procs []process.Process, rootPID int32) []process.Process {
-	children := childrenByParent(procs)
+type Index struct {
+	byPID    map[int32]process.Process
+	children map[int32][]process.Process
+}
+
+func NewIndex(procs []process.Process) *Index {
+	byPID := make(map[int32]process.Process, len(procs))
+	for _, proc := range procs {
+		byPID[proc.PID] = proc
+	}
+	return &Index{byPID: byPID, children: childrenByParent(procs)}
+}
+
+func (i *Index) Process(pid int32) (process.Process, bool) {
+	proc, ok := i.byPID[pid]
+	return proc, ok
+}
+
+func (i *Index) Descendants(rootPID int32) []process.Process {
 	seen := map[int32]bool{rootPID: true}
 	result := make([]process.Process, 0)
-	appendDescendants(rootPID, children, seen, &result)
+	appendDescendants(rootPID, i.children, seen, &result)
 	return result
 }
 

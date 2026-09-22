@@ -396,6 +396,37 @@ func TestDockerCleanupPreviewDoesNotStop(t *testing.T) {
 	assertFileContains(t, fixture.auditPath, `"applied":false`)
 }
 
+func TestDockerCleanupRejectsRemoteEndpoint(t *testing.T) {
+	fixture := setupDockerFixture(t)
+	t.Setenv("PK_E2E_DOCKER_ENDPOINT", "ssh://production.example")
+
+	result := runCLI(t, "cleanup", "--scope", "containers", "--apply")
+	assertExitCode(t, result, 1)
+	assertContains(t, result.stderr, "requires a local Unix socket endpoint")
+	if _, err := os.Stat(fixture.stopLog); !os.IsNotExist(err) {
+		t.Fatal("remote endpoint unexpectedly stopped a container")
+	}
+}
+
+func TestCleanupRejectsTypoBeforeActing(t *testing.T) {
+	fixture := setupDockerFixture(t)
+	result := runCLI(
+		t,
+		"cleanup",
+		"--scope",
+		"containers",
+		"--apply",
+		"typo",
+		"--protected",
+		"node",
+	)
+	assertExitCode(t, result, 1)
+	assertContains(t, result.stderr, "does not accept positional arguments")
+	if _, err := os.Stat(fixture.stopLog); !os.IsNotExist(err) {
+		t.Fatal("invalid arguments unexpectedly stopped a container")
+	}
+}
+
 func setupDockerFixture(t *testing.T) dockerFixture {
 	t.Helper()
 	binDir := t.TempDir()
@@ -418,6 +449,12 @@ func assertContains(t *testing.T, value string, expected string) {
 }
 
 const fakeDockerTool = `#!/bin/sh
+if [ "$1" = context ] && [ "$2" = inspect ]; then
+  printf '"%s"\n' "${PK_E2E_DOCKER_ENDPOINT:-unix:///var/run/docker.sock}"
+  exit 0
+fi
+[ "$1" = --host ] && [ "$2" = unix:///var/run/docker.sock ] || exit 3
+shift 2
 if [ "$1" = container ] && [ "$2" = ls ]; then
   printf '%s\n' '{"ID":"abc123","Image":"e2e:latest","Names":"pk-e2e","Command":"sleep","Labels":"com.docker.compose.project=e2e"}'
   exit 0

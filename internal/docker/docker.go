@@ -2,9 +2,12 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/yowainwright/pk/internal/audit"
@@ -49,6 +52,7 @@ type CommandRunner interface {
 
 type CLIClient struct {
 	runner CommandRunner
+	host   string
 }
 
 type execRunner struct{}
@@ -63,7 +67,11 @@ func (c *CLIClient) Available() bool {
 }
 
 func (c *CLIClient) List(ctx context.Context) ([]Container, error) {
-	output, err := c.runner.Output(ctx, "docker", "container", "ls", "--format", "{{json .}}")
+	args, err := c.localArgs(ctx, "container", "ls", "--format", "{{json .}}")
+	if err != nil {
+		return nil, err
+	}
+	output, err := c.runner.Output(ctx, "docker", args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing docker containers: %w", err)
 	}
@@ -71,7 +79,11 @@ func (c *CLIClient) List(ctx context.Context) ([]Container, error) {
 }
 
 func (c *CLIClient) Stop(ctx context.Context, id string) error {
-	if err := c.runner.Run(ctx, "docker", "container", "stop", id); err != nil {
+	args, err := c.localArgs(ctx, "container", "stop", id)
+	if err != nil {
+		return err
+	}
+	if err := c.runner.Run(ctx, "docker", args...); err != nil {
 		return fmt.Errorf("stopping docker container %s: %w", id, err)
 	}
 	return nil
@@ -131,4 +143,43 @@ func hasDaemonUnavailableMessage(message string) bool {
 		return true
 	}
 	return daemonStopped
+}
+
+func (c *CLIClient) localArgs(ctx context.Context, args ...string) ([]string, error) {
+	if c.host == "" {
+		host, err := c.localEndpoint(ctx)
+		if err != nil {
+			return nil, err
+		}
+		c.host = host
+	}
+	return append([]string{"--host", c.host}, args...), nil
+}
+
+func (c *CLIClient) localEndpoint(ctx context.Context) (string, error) {
+	format := "{{json .Endpoints.docker.Host}}"
+	output, err := c.runner.Output(ctx, "docker", "context", "inspect", "--format", format)
+	if err != nil {
+		return "", fmt.Errorf("inspecting Docker endpoint: %w", err)
+	}
+	var host string
+	if err := json.Unmarshal(output, &host); err != nil {
+		return "", fmt.Errorf("decoding Docker endpoint: %w", err)
+	}
+	if !isLocalEndpoint(host) {
+		return "", fmt.Errorf("docker cleanup requires a local Unix socket endpoint")
+	}
+	return host, nil
+}
+
+func isLocalEndpoint(host string) bool {
+	endpoint, err := url.Parse(host)
+	if err != nil {
+		return false
+	}
+	localSocket := endpoint.Scheme == "unix" && endpoint.Host == ""
+	plainPath := endpoint.RawQuery == "" && endpoint.Fragment == ""
+	noCredentials := endpoint.User == nil
+	valid := localSocket && plainPath && noCredentials && filepath.IsAbs(endpoint.Path)
+	return valid
 }
