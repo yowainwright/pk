@@ -19,27 +19,21 @@ Step 1. Install pk.
 brew install yowainwright/tap/pk
 ```
 
-Step 2. Enable background cleanup.
+Step 2. apply it.
 ```sh
-pk enable
+pk install --apply
 ```
 
 Step 3. Open a new zsh tab. That's it!
 
 ## What's going on under the hood?
 
-`pk enable` starts background cleanup now, registers it to start at login, and
-adds a hook to your `.zshrc`. Enabling authorizes automatic cleanup of unprotected
-leftovers from newly opened zsh sessions.
+`pk install --apply` starts the background service and adds a hook to your
+`.zshrc`. The `--apply` flag allows pk to stop tracked processes automatically.
 
 Background cleanup runs through launchd on macOS or user systemd on Linux.
 Session tracking uses the [interactive zsh hook](internal/shell/pk.zsh).
 See the [service setup](internal/service).
-
-After a restart, cleanup returns when you log in. macOS uses a per-user
-LaunchAgent; Linux uses a systemd user unit. pk does not enable Linux lingering
-or install a system-wide boot service. The native service manager restarts a
-crashed daemon. Saved ignores survive restarts and are loaded before cleanup.
 
 ## Install
 
@@ -53,7 +47,7 @@ To install from a checkout of this repository instead of Homebrew:
 
 ```sh
 go install ./cmd/pk
-pk enable
+pk install --apply
 ```
 
 ## Why pk exists
@@ -65,7 +59,7 @@ can outlive the work they were started for. This takes processing power from you
 Open a zsh tab → run your tools → close the tab → pk cleans up leftovers
 ```
 
-Once enabled via `pk enable`, pk runs quietly in the background.
+Once applied via `pk install --apply` pk runs quietly in the background.
 You can check what it is tracking with
 `pk obs` and read cleanup records with `pk history`.
 
@@ -124,32 +118,23 @@ pk monitor --cpu 90 --mem 4096 --grace 1m --apply
 
 `pk monitor` command uses resource thresholds across visible processes, independently of whether their terminal sessions have ended.
 
-### `pk enable`
+### pk install
 
-Start automatic cleanup now and at future logins for the current user. Open a
-new zsh tab afterward. Repeating enable reconciles the service and shell hook
-without duplicating registrations or resetting current session tracking.
+`pk install` installs and starts the background service for the current user. `--apply` is required because the service can stop tracked leftovers.
 
 ```sh
-pk enable
-pk status
+pk install --apply
 ```
 
-After upgrading pk, run `pk enable` to refresh the daemon and shell integration.
-Enable restarts an existing daemon while retaining its session tracking. A verified
-symlink used to invoke pk, such as Homebrew's `bin/pk`, is retained in the service
-command so it can follow package upgrades. See the [installer](internal/service).
+After running, open a fresh zsh tab. The [installer](internal/service) uses launchd
+on macOS and user systemd on Linux. It accepts `--apply`; the options for `monitor` and `cleanup` do not configure the installed service.
 
-### `pk disable`
+### pk uninstall
 
-Stop automatic cleanup and remove its login registration and shell hook.
-The executable, saved ignores, and retained history remain. Repeating disable
-is safe. Open shells stop reporting when the plugin is removed; already-sent
-signals cannot be undone. If you enable again, only fresh zsh sessions are
-tracked. Previously tracked processes are left alone.
+Stop and remove the background service and remove the shell hook by running `pk uninstall`. Open a fresh shell afterward. The executable and stored history remain.
 
 ```sh
-pk disable
+pk uninstall
 ```
 
 To also remove an installation made through Homebrew:
@@ -157,61 +142,6 @@ To also remove an installation made through Homebrew:
 ```sh
 brew uninstall yowainwright/tap/pk
 ```
-
-### `pk ignore` and `pk unignore`
-
-Save process names that pk must leave alone:
-
-```sh
-pk ignore postgres redis-server
-pk ignore --list
-pk unignore postgres
-```
-
-Names match exactly, including case, across projects. Quote names containing
-spaces. These are process names as shown by `pk scan`, not PIDs, command lines,
-paths, or patterns. Ignoring a parent does not protect differently named
-children. Container protection still uses the `pk.protected=true` label.
-
-Saved names apply to `scan`, process `cleanup`, foreground `monitor`, and
-background cleanup. Running cleanup reloads them before each pass; a pass
-already in progress may finish. `unignore` removes only saved entries and cannot
-remove built-in protections. Invocation-specific `--protected` names are added
-to both built-in and saved protections.
-
-Preferences are stored in:
-
-| Platform | File |
-| --- | --- |
-| macOS | `~/Library/Application Support/pk/config.json` |
-| Linux | `$XDG_CONFIG_HOME/pk/config.json`, or `~/.config/pk/config.json` when unset |
-
-```json
-{
-  "ignored_process_names": ["postgres", "redis-server"]
-}
-```
-
-The [preferences store](internal/config/store.go) creates this file only when
-you change saved ignores. It locks updates, removes duplicates, and replaces the
-file atomically with owner-only permissions. A missing file means no additional
-ignores; malformed or unreadable preferences block cleanup instead of silently
-dropping protections. Correct the file to resume cleanup. `pk disable` remains
-available when preferences are malformed.
-
-Enabled state belongs to launchd or systemd, not this JSON file. Native service
-files, shell integration, and existing history remain in their existing
-locations; see [service paths](internal/service/paths.go), the
-[shell installer](internal/shell/shell.go), and the [audit store](internal/audit).
-The daemon's service command pins its preferences path at enable time. Use the
-same Linux `XDG_CONFIG_HOME` for subsequent ignore commands.
-
-### Compatibility commands
-
-`pk install --apply` enables cleanup and `pk uninstall` disables it. Existing
-scripts keep working. `pk install` without `--apply` still refuses to activate
-cleanup. The primary interface is `pk enable` / `pk disable`; `--apply` continues
-to control foreground `cleanup` and `monitor`.
 
 ## pk api args
 
@@ -260,6 +190,41 @@ Running `pk` with no arguments also shows the command list.
 ```sh
 pk help
 pk help cleanup
+```
+
+### `pk enable`
+
+`pk enable` starts background cleanup now and at login.
+
+```sh
+pk enable
+```
+
+After running, open a fresh zsh tab.
+
+### `pk disable`
+
+`pk disable` stops background cleanup and removes automatic startup and the shell hook. The executable, saved ignores, and history remain.
+
+```sh
+pk disable
+```
+
+### `pk ignore`
+
+`pk ignore` saves process names to protect from cleanup. Names must match exactly, including case. `--list` shows saved names.
+
+```sh
+pk ignore postgres redis-server
+pk ignore --list
+```
+
+### `pk unignore`
+
+`pk unignore` removes saved process-name ignores. Built-in protections remain.
+
+```sh
+pk unignore postgres
 ```
 
 ## pk api opts

@@ -89,6 +89,19 @@ func TestDaemonRestartKeepsSessionsSinceEnable(t *testing.T) {
 	}
 }
 
+func TestFreshSessionUsesProcessClockWhenWallClockDiffers(t *testing.T) {
+	event := sessionStartEvent()
+	event.ObservedAt = time.UnixMilli(90)
+	store := newFakeStore(event)
+	store.procs = []process.Process{shellProcess(), childProcess()}
+	runner := testRunner(store, nil)
+	runner.cfg.SessionSince = 99
+	requireNoError(t, runner.Tick(t.Context()))
+	if len(store.state.Processes) != 1 {
+		t.Fatal("wall-clock skew discarded a fresh shell identity")
+	}
+}
+
 func requireNoError(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {

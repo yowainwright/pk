@@ -112,13 +112,10 @@ func (r *Runner) applyCurrentEvents(
 }
 
 func (r *Runner) currentEvent(event lifecycle.Event) bool {
-	if event.ObservedAt.UnixMilli() < r.cfg.SessionSince {
-		return false
-	}
 	if lifecycleRequiresSession(event.Kind) {
 		return event.ShellCreateTime >= r.cfg.SessionSince
 	}
-	return true
+	return event.ObservedAt.UnixMilli() >= r.cfg.SessionSince
 }
 
 func (r *Runner) removeEarlierSessions(state *lifecycle.State) {
@@ -434,6 +431,19 @@ func (r *Runner) reconcile(
 	procs []process.Process,
 ) (lifecycle.State, error) {
 	live := liveProcesses(procs)
+	state, deferred := r.reconcileSessions(ctx, state, procs, live)
+	if err := ctx.Err(); err != nil {
+		return state, err
+	}
+	return r.killEligible(ctx, state, live, deferred), nil
+}
+
+func (r *Runner) reconcileSessions(
+	ctx context.Context,
+	state lifecycle.State,
+	procs []process.Process,
+	live map[string]process.Process,
+) (lifecycle.State, map[string]bool) {
 	deferred := make(map[string]bool)
 	for _, session := range state.Sessions {
 		var err error
@@ -445,10 +455,7 @@ func (r *Runner) reconcile(
 		state.LastError = err.Error()
 		state.Daemon.LastError = err.Error()
 	}
-	if err := ctx.Err(); err != nil {
-		return state, err
-	}
-	return r.killEligible(ctx, state, live, deferred), nil
+	return state, deferred
 }
 
 func liveProcesses(procs []process.Process) map[string]process.Process {
@@ -471,6 +478,16 @@ func (r *Runner) reconcileSession(
 		state.Sessions[session.ID] = session
 		return state, nil
 	}
+	return r.reconcileLiveSession(ctx, state, session, procs, live)
+}
+
+func (r *Runner) reconcileLiveSession(
+	ctx context.Context,
+	state lifecycle.State,
+	session lifecycle.TerminalSession,
+	procs []process.Process,
+	live map[string]process.Process,
+) (lifecycle.State, error) {
 	exists, err := r.processExists(ctx, session.ShellProcessKey, live)
 	if err != nil {
 		return state, fmt.Errorf("checking session %s: %w", session.ID, err)
@@ -632,7 +649,17 @@ func (r *Runner) handleEligibleProcess(
 	if protected {
 		return state
 	}
-	err = r.kill(ctx, proc, reason)
+	return r.killManagedProcess(ctx, state, key, proc, reason)
+}
+
+func (r *Runner) killManagedProcess(
+	ctx context.Context,
+	state lifecycle.State,
+	key string,
+	proc process.Process,
+	reason string,
+) lifecycle.State {
+	err := r.kill(ctx, proc, reason)
 	if err != nil {
 		state.LastError = err.Error()
 		return state

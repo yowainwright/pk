@@ -4,10 +4,41 @@ import (
 	"bytes"
 	"flag"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestDaemonUsesPinnedPreferencesWhenHomeDiffers(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	store := NewStore(filepath.Join(t.TempDir(), "config.json"))
+	requireNoError(t, store.Add([]string{"postgres"}))
+	args := []string{"--config", store.Path(), "--since", "123", "--protected", "redis"}
+	cfg, err := ParseArgs("__daemon", args)
+	requireNoError(t, err)
+	for _, name := range []string{"postgres", "redis", "pk"} {
+		if !cfg.IsProtected(name) {
+			t.Fatalf("missing protection: %s", name)
+		}
+	}
+	if cfg.SessionSince != 123 {
+		t.Fatalf("wrong cutoff: %d", cfg.SessionSince)
+	}
+}
+
+func TestUnreadablePreferencesBlockParsing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	store, err := DefaultStore()
+	requireNoError(t, err)
+	requireNoError(t, os.MkdirAll(store.Path(), 0o700))
+	if _, err := ParseArgs("scan", nil); err == nil {
+		t.Fatal("accepted nonregular preferences")
+	}
+}
 
 func ParseArgs(name string, args []string) (*Config, error) {
 	return ParseArgsWithOutput(name, args, io.Discard, nil)

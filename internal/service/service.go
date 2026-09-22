@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,9 +13,9 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/yowainwright/pk/internal/config"
+	"github.com/yowainwright/pk/internal/process"
 	pkShell "github.com/yowainwright/pk/internal/shell"
 )
 
@@ -76,6 +77,7 @@ func stableExecutable(executable string, invoked string) string {
 	if err != nil {
 		return executable
 	}
+	// #nosec G703 -- Metadata only; SameFile verifies the invoked path is this executable before retaining it.
 	entrypoint, err := os.Stat(absolute)
 	if err != nil {
 		return executable
@@ -117,7 +119,10 @@ func (m *Manager) install(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	m.since = registrationSince(previous)
+	m.since, err = enableSince(ctx, previous)
+	if err != nil {
+		return err
+	}
 	if bytes.Equal(previous, m.registration()) {
 		return m.resume(ctx)
 	}
@@ -150,13 +155,7 @@ func (m *Manager) resume(ctx context.Context) error {
 		return m.waitRunning(ctx)
 	}
 	if m.goos == "linux" {
-		if err := m.enableSystemd(ctx); err != nil {
-			return err
-		}
-		if err := m.runner.Run(ctx, "systemctl", "--user", "restart", systemdUnit); err != nil {
-			return err
-		}
-		return m.waitRunning(ctx)
+		return m.resumeSystemd(ctx)
 	}
 	return unsupported(m.goos)
 }
@@ -213,7 +212,15 @@ func (m *Manager) uninstallService(ctx context.Context) error {
 }
 
 func readRegistration(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	data, err := root.ReadFile(filepath.Base(path))
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -231,7 +238,30 @@ func registrationSince(data []byte) int64 {
 			return value
 		}
 	}
-	return time.Now().UnixMilli()
+	return 0
+}
+
+func enableSince(ctx context.Context, previous []byte) (int64, error) {
+	if since := registrationSince(previous); since > 0 {
+		return since, nil
+	}
+	created, err := enablingProcessTime(ctx, os.Getpid())
+	if err != nil {
+		return 0, fmt.Errorf("reading enable process identity: %w", err)
+	}
+	// Compare identities from the same OS clock; Linux boot-time estimates can
+	// differ from wall time. Exclude shells created in the enabling CLI's tick.
+	return created + 1, nil
+}
+
+func enablingProcessTime(ctx context.Context, pid int) (int64, error) {
+	if pid <= 0 {
+		return 0, fmt.Errorf("invalid enabling process ID: %d", pid)
+	}
+	if pid > math.MaxInt32 {
+		return 0, fmt.Errorf("invalid enabling process ID: %d", pid)
+	}
+	return process.CreateTime(ctx, int32(pid))
 }
 
 func (m *Manager) registration() []byte {
@@ -242,8 +272,12 @@ func (m *Manager) registration() []byte {
 }
 
 func (m *Manager) systemdAbsent(ctx context.Context) (bool, error) {
-	if m.installed() {
+	_, statErr := os.Stat(m.servicePath())
+	if statErr == nil {
 		return false, nil
+	}
+	if !os.IsNotExist(statErr) {
+		return false, statErr
 	}
 	output, err := m.runner.Output(ctx, "systemctl", "--user", "show", systemdUnit,
 		"--property=LoadState", "--property=ActiveState")

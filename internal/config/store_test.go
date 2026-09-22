@@ -111,7 +111,7 @@ func TestPreferencesRejectSymlinks(t *testing.T) {
 	data := []byte(`{"ignored_process_names":["node"]}`)
 	requireNoError(t, os.WriteFile(target, data, 0o600))
 	path := filepath.Join(dir, "config.json")
-	requireNoError(t, os.Symlink(target, path))
+	requireNoError(t, os.Symlink(filepath.Base(target), path))
 	store := NewStore(path)
 	if _, err := store.Names(); err == nil {
 		t.Fatal("read preferences symlink")
@@ -132,6 +132,20 @@ func TestInvalidNamesDoNotPartiallyUpdatePreferences(t *testing.T) {
 	partialUpdate := err != nil || len(names) != 0
 	if partialUpdate {
 		t.Fatalf("partial update: %v, %v", names, err)
+	}
+}
+
+func TestIgnoreRejectsSymlinkedLock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	target := filepath.Join(dir, "other.lock")
+	requireNoError(t, os.WriteFile(target, nil, 0o600))
+	requireNoError(t, os.Symlink(filepath.Base(target), path+".lock"))
+	if err := NewStore(path).Add([]string{"node"}); err == nil {
+		t.Fatal("accepted symlinked preferences lock")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("wrote preferences without its own lock: %v", err)
 	}
 }
 

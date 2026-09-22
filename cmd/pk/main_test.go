@@ -51,14 +51,19 @@ func TestIgnorePersistsAcrossCommandsAndComposesWithProtected(t *testing.T) {
 	if deps.cfg.IsProtected("node") {
 		t.Fatal("ignore unexpectedly case-insensitive")
 	}
+	assertIgnoreListAndRemoval(t, deps.cfg)
+}
+
+func assertIgnoreListAndRemoval(t *testing.T, cfg *config.Config) {
+	t.Helper()
 	var out bytes.Buffer
 	requireNoError(t, run([]string{"ignore", "--list"}, &out))
 	if out.String() != "Node\npostgres\n" {
 		t.Fatalf("unexpected list: %q", out.String())
 	}
 	requireNoError(t, run([]string{"unignore", "postgres"}, io.Discard))
-	requireNoError(t, deps.cfg.Reload())
-	if deps.cfg.IsProtected("postgres") {
+	requireNoError(t, cfg.Reload())
+	if cfg.IsProtected("postgres") {
 		t.Fatal("unignore did not remove saved name")
 	}
 }

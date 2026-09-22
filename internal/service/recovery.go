@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,23 +22,48 @@ func (m *Manager) withLock(ctx context.Context, operation func(context.Context) 
 	if err := ensureDir(filepath.Dir(path)); err != nil {
 		return err
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	file, err := openServiceLock(path)
 	if err != nil {
 		return fmt.Errorf("opening service lock: %w", err)
 	}
 	defer func() { _ = file.Close() }()
-	if err := lockService(ctx, file); err != nil {
+	return withServiceLock(ctx, file, operation)
+}
+
+func withServiceLock(
+	ctx context.Context,
+	file *os.File,
+	operation func(context.Context) error,
+) error {
+	fd, err := serviceDescriptor(file)
+	if err != nil {
 		return err
 	}
-	defer func() { _ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN) }()
+	if err := lockService(ctx, fd); err != nil {
+		return err
+	}
+	defer func() { _ = syscall.Flock(fd, syscall.LOCK_UN) }()
 	return operation(ctx)
 }
 
-func lockService(ctx context.Context, file *os.File) error {
+func openServiceLock(path string) (*os.File, error) {
+	// #nosec G304 -- The path is fixed under the user's pk directory; reject symlink leaves.
+	return os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+}
+
+func serviceDescriptor(file *os.File) (int, error) {
+	fd := file.Fd()
+	if fd > uintptr(math.MaxInt) {
+		return 0, fmt.Errorf("file descriptor out of range: %d", fd)
+	}
+	return int(fd), nil
+}
+
+func lockService(ctx context.Context, fd int) error {
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB)
 		if !errors.Is(err, syscall.EWOULDBLOCK) {
 			return err
 		}

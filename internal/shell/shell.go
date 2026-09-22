@@ -114,6 +114,10 @@ func readOptional(path string) (string, error) {
 	defer func() {
 		_ = root.Close()
 	}()
+	return readRootText(root, name)
+}
+
+func readRootText(root *os.Root, name string) (string, error) {
 	file, err := root.Open(name)
 	if os.IsNotExist(err) {
 		return "", nil
@@ -207,7 +211,15 @@ func removePlugin(path string) error {
 }
 
 func readPlugin(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	data, err := root.ReadFile(filepath.Base(path))
 	if os.IsNotExist(err) {
 		return nil, nil
 	}

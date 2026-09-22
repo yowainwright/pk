@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -26,6 +27,9 @@ func DefaultStore() (*Store, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return nil, fmt.Errorf("finding preferences directory: %w", err)
+	}
+	if !filepath.IsAbs(dir) {
+		return nil, fmt.Errorf("preferences directory must be absolute: %s", dir)
 	}
 	return NewStore(filepath.Join(dir, "pk", "config.json")), nil
 }
@@ -51,7 +55,9 @@ func (s *Store) Names() ([]string, error) {
 }
 
 func readPreferences(root *os.Root, name string) ([]string, error) {
-	file, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	path := filepath.Join(root.Name(), name)
+	// #nosec G304 -- The caller supplies the preferences directory and basename; reject symlink leaves.
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if os.IsNotExist(err) {
 		return []string{}, nil
 	}
@@ -59,7 +65,21 @@ func readPreferences(root *os.Root, name string) ([]string, error) {
 		return nil, fmt.Errorf("reading preferences: %w", err)
 	}
 	defer func() { _ = file.Close() }()
+	if err := requireRegularFile(file); err != nil {
+		return nil, err
+	}
 	return decodePreferences(file)
+}
+
+func requireRegularFile(file *os.File) error {
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("preferences must be a regular file")
+	}
+	return nil
 }
 
 func decodePreferences(reader io.Reader) ([]string, error) {
@@ -145,16 +165,29 @@ func openPreferencesRoot(dir string) (*os.Root, error) {
 
 func updateLocked(root *os.Root, name string, names []string, remove bool) error {
 	path := filepath.Join(root.Name(), name+".lock")
+	// #nosec G304 -- The lock is beside the selected preferences file; O_NOFOLLOW rejects symlink leaves.
 	lock, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return fmt.Errorf("opening preferences lock: %w", err)
 	}
 	defer func() { _ = lock.Close() }()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+	fd, err := preferencesDescriptor(lock)
+	if err != nil {
+		return err
+	}
+	if err := syscall.Flock(fd, syscall.LOCK_EX); err != nil {
 		return fmt.Errorf("locking preferences: %w", err)
 	}
-	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
+	defer func() { _ = syscall.Flock(fd, syscall.LOCK_UN) }()
 	return updatePreferences(root, name, names, remove)
+}
+
+func preferencesDescriptor(file *os.File) (int, error) {
+	fd := file.Fd()
+	if fd > uintptr(math.MaxInt) {
+		return 0, fmt.Errorf("file descriptor out of range: %d", fd)
+	}
+	return int(fd), nil
 }
 
 func updatePreferences(root *os.Root, name string, names []string, remove bool) error {

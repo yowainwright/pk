@@ -118,6 +118,22 @@ func TestServiceOperationsWaitForSharedLock(t *testing.T) {
 	}
 }
 
+func TestEnableRejectsSymlinkedServiceLock(t *testing.T) {
+	runner := &fakeRunner{}
+	manager := testManager(t, "linux", runner)
+	path := filepath.Join(manager.home, ".config", "pk", "service.lock")
+	requireNoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	target := filepath.Join(filepath.Dir(path), "other.lock")
+	requireNoError(t, os.WriteFile(target, nil, 0o600))
+	requireNoError(t, os.Symlink(filepath.Base(target), path))
+	if err := manager.Install(t.Context()); err == nil {
+		t.Fatal("accepted symlinked service lock")
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("changed service without its own lock: %v", runner.commands)
+	}
+}
+
 func requireNoError(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {

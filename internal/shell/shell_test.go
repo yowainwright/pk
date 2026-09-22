@@ -52,21 +52,30 @@ func runZshScript(
 	extra string,
 ) {
 	t.Helper()
-	zsh, err := exec.LookPath("zsh")
-	if err != nil {
-		t.Skip("zsh is required for shell integration tests")
-	}
+	zsh := requireZsh(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	pluginPath := installer.PluginPath()
 	args := []string{"-dfi", "-c", script, "pk-test", pluginPath, extra}
 	command := exec.CommandContext(ctx, zsh, args...)
-	command.Env = append(
-		zshTestEnvironment(),
-		"PK_TEST_EVENT_LOG="+eventsPath,
-		"HOME="+installer.Home,
-	)
+	command.Env = zshEnvironment(installer.Home, eventsPath)
 	assertZshScript(t, command)
+}
+
+func zshEnvironment(home string, eventsPath string) []string {
+	environment := zshTestEnvironment()
+	eventLog := "PK_TEST_EVENT_LOG=" + eventsPath
+	homeEntry := "HOME=" + home
+	return append(environment, eventLog, homeEntry)
+}
+
+func requireZsh(t *testing.T) string {
+	t.Helper()
+	zsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh is required for shell integration tests")
+	}
+	return zsh
 }
 
 func assertZshScript(t *testing.T, command *exec.Cmd) {

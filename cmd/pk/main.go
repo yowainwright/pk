@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -309,6 +310,15 @@ func collectCleanupResults(
 	if err != nil {
 		return cleanupResults{}, operationError("opening audit store", err)
 	}
+	return collectAuditedCleanup(ctx, cfg, options, log)
+}
+
+func collectAuditedCleanup(
+	ctx context.Context,
+	cfg *config.Config,
+	options cleanupOptions,
+	log auditStore,
+) (cleanupResults, error) {
 	results, err := runProcessCleanup(ctx, cfg, options, log)
 	if err != nil {
 		return cleanupResults{}, operationError("cleaning processes", err)
@@ -872,14 +882,26 @@ func (a application) runDaemon(args []string) error {
 	if err != nil {
 		return operationError("parsing daemon options", err)
 	}
-	store, log, err := daemonStores()
+	store, log, err := daemonStores(cfg)
 	if err != nil {
 		return err
 	}
 	return newDaemonRunner(cfg, store, log).Run(a.ctx)
 }
 
-func daemonStores() (lifecycleStore, auditStore, error) {
+func daemonStores(cfg *config.Config) (lifecycleStore, auditStore, error) {
+	dir := cfg.StateDir()
+	if dir == "" {
+		return defaultDaemonStores()
+	}
+	path := os.Getenv("PK_AUDIT_PATH")
+	if path == "" {
+		path = filepath.Join(dir, "events.jsonl")
+	}
+	return lifecycle.NewStore(dir), audit.New(path), nil
+}
+
+func defaultDaemonStores() (lifecycleStore, auditStore, error) {
 	store, err := newLifecycleStore()
 	if err != nil {
 		return nil, nil, operationError("opening lifecycle store", err)
@@ -949,8 +971,7 @@ func parseSessionFlags(
 	}
 	var pids sessionPIDs
 	var exitCode exitCodeArg
-	flags := flag.NewFlagSet("__session", flag.ContinueOnError)
-	flags.SetOutput(output)
+	flags := sessionFlagSet(output)
 	registerSessionFlags(flags, &event, &pids, &exitCode)
 	if err := flags.Parse(args); err != nil {
 		return lifecycle.Event{}, exitCodeArg{}, err
@@ -959,6 +980,12 @@ func parseSessionFlags(
 		return lifecycle.Event{}, exitCodeArg{}, err
 	}
 	return event, exitCode, nil
+}
+
+func sessionFlagSet(output io.Writer) *flag.FlagSet {
+	flags := flag.NewFlagSet("__session", flag.ContinueOnError)
+	flags.SetOutput(output)
+	return flags
 }
 
 func newSessionEvent() (lifecycle.Event, error) {

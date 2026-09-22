@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -19,6 +20,14 @@ type Config struct {
 	store           *Store
 	baseProtected   []string
 	preferencesPath string
+}
+
+// StateDir pins daemon lifecycle and audit data alongside explicit preferences.
+func (c *Config) StateDir() string {
+	if c.preferencesPath == "" {
+		return ""
+	}
+	return filepath.Dir(c.preferencesPath)
 }
 
 var defaultProtected = []string{

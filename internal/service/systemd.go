@@ -27,6 +27,16 @@ func (m *Manager) installSystemd(ctx context.Context) error {
 	return nil
 }
 
+func (m *Manager) resumeSystemd(ctx context.Context) error {
+	if err := m.enableSystemd(ctx); err != nil {
+		return err
+	}
+	if err := m.runner.Run(ctx, "systemctl", "--user", "restart", systemdUnit); err != nil {
+		return err
+	}
+	return m.waitRunning(ctx)
+}
+
 func (m *Manager) uninstallSystemd(ctx context.Context) error {
 	disableErr := m.disableSystemd(ctx)
 	if err := ctx.Err(); err != nil {

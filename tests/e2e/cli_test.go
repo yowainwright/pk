@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -43,6 +44,9 @@ func runSuite(m *testing.M) int {
 		return 1
 	}
 	code := m.Run()
+	if suiteDir == "" {
+		return code
+	}
 	err := os.RemoveAll(suiteDir)
 	cleanupFailed := err != nil
 	testsPassed := code == 0
@@ -55,6 +59,10 @@ func runSuite(m *testing.M) int {
 }
 
 func setupSuite() error {
+	if binary := os.Getenv("PK_E2E_BINARY"); binary != "" {
+		pkBinary = binary
+		return nil
+	}
 	repositoryRoot = findRepositoryRoot()
 	var err error
 	buildDir := filepath.Join(repositoryRoot, "tmp")
@@ -108,6 +116,32 @@ func TestRootHelpIsSafe(t *testing.T) {
 	if !strings.Contains(result.stdout, "pk tracks local terminal sessions") {
 		t.Fatalf("unexpected root help:\n%s", result.stdout)
 	}
+}
+
+func TestConcurrentCLIIgnoresPreserveEverySuccessfulUpdate(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var group sync.WaitGroup
+	for index := range 12 {
+		group.Go(func() {
+			name := fmt.Sprintf("worker-%02d", index)
+			result := runCLI(t, "ignore", name)
+			if result.err != nil {
+				t.Errorf("ignore %s: %v\n%s", name, result.err, result.stderr)
+			}
+		})
+	}
+	group.Wait()
+	assertSavedWorkers(t)
+}
+
+func assertSavedWorkers(t *testing.T) {
+	t.Helper()
+	var expected []string
+	for index := range 12 {
+		expected = append(expected, fmt.Sprintf("worker-%02d", index))
+	}
+	assertCommandOutput(t, []string{"ignore", "--list"}, strings.Join(expected, "\n")+"\n")
 }
 
 func TestVersionUsesReleaseMetadata(t *testing.T) {
@@ -327,17 +361,7 @@ func TestEnableDisablePreservesSavedIgnoresAndHistory(t *testing.T) {
 	if _, err := os.Stat(servicePath(home)); !os.IsNotExist(err) {
 		t.Fatalf("service remains: %v", err)
 	}
-	assertCommandOutput(t, []string{"help", "enable"}, enableHelp(t))
-}
-
-func enableHelp(t *testing.T) string {
-	t.Helper()
-	result := runCLI(t, "enable", "--help")
-	if result.err != nil {
-		t.Fatal(result.err)
-	}
-	assertContains(t, result.stdout, "Usage: pk enable")
-	return result.stdout
+	assertHelpRoute(t, []string{"help", "enable"}, "Usage: pk enable")
 }
 
 func TestDockerCleanupApplyIsAudited(t *testing.T) {

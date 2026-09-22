@@ -16,12 +16,7 @@ import (
 )
 
 func TestMonitorReloadsIgnoresAndResetsGraceAfterUnignore(t *testing.T) {
-	cfg := baseConfig()
-	prefs := config.NewStore(filepath.Join(t.TempDir(), "config.json"))
-	requireNoError(t, cfg.UseStore(prefs))
-	killer := &fakeKiller{}
-	monitor := testMonitorWithKiller(cfg, killer)
-	monitor.lister = &fakeLister{procs: processes(overCPUProcess())}
+	monitor, prefs, killer := savedIgnoreMonitor(t)
 	monitor.check(t.Context())
 	monitor.offenses[42].firstSeen = time.Now().Add(-2 * time.Hour)
 	requireNoError(t, prefs.Add([]string{"node"}))
@@ -36,6 +31,17 @@ func TestMonitorReloadsIgnoresAndResetsGraceAfterUnignore(t *testing.T) {
 	if len(monitor.offenses) != 1 {
 		t.Fatal("unignore did not resume monitoring")
 	}
+}
+
+func savedIgnoreMonitor(t *testing.T) (*Monitor, *config.Store, *fakeKiller) {
+	t.Helper()
+	cfg := baseConfig()
+	prefs := config.NewStore(filepath.Join(t.TempDir(), "config.json"))
+	requireNoError(t, cfg.UseStore(prefs))
+	killer := &fakeKiller{}
+	monitor := testMonitorWithKiller(cfg, killer)
+	monitor.lister = &fakeLister{procs: processes(overCPUProcess())}
+	return monitor, prefs, killer
 }
 
 func TestMonitorSkipsCleanupWhenPreferencesBecomeInvalid(t *testing.T) {
