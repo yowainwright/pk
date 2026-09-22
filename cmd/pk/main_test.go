@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -22,6 +23,87 @@ import (
 	"github.com/yowainwright/pk/internal/process"
 	"github.com/yowainwright/pk/internal/scan"
 )
+
+func TestEnableAndDisableUseBackgroundManager(t *testing.T) {
+	deps := commandDeps(t)
+	var out bytes.Buffer
+	requireNoError(t, run([]string{"enable"}, &out))
+	if !deps.background.installed {
+		t.Fatal("enable did not install service")
+	}
+	assertMainOutputContains(t, out.String(), "Starts at login")
+	requireNoError(t, run([]string{"disable"}, &out))
+	if !deps.background.uninstalled {
+		t.Fatal("disable did not remove service")
+	}
+}
+
+func TestIgnorePersistsAcrossCommandsAndComposesWithProtected(t *testing.T) {
+	deps := commandDeps(t)
+	for _, args := range [][]string{{"ignore", "postgres", "postgres", "Node"}, {"scan", "--protected", "redis"}} {
+		requireNoError(t, run(args, io.Discard))
+	}
+	for _, name := range []string{"postgres", "Node", "redis", "pk"} {
+		if !deps.cfg.IsProtected(name) {
+			t.Fatalf("missing protection: %s", name)
+		}
+	}
+	if deps.cfg.IsProtected("node") {
+		t.Fatal("ignore unexpectedly case-insensitive")
+	}
+	var out bytes.Buffer
+	requireNoError(t, run([]string{"ignore", "--list"}, &out))
+	if out.String() != "Node\npostgres\n" {
+		t.Fatalf("unexpected list: %q", out.String())
+	}
+	requireNoError(t, run([]string{"unignore", "postgres"}, io.Discard))
+	requireNoError(t, deps.cfg.Reload())
+	if deps.cfg.IsProtected("postgres") {
+		t.Fatal("unignore did not remove saved name")
+	}
+}
+
+func TestSettingsRejectAmbiguousArguments(t *testing.T) {
+	commandDeps(t)
+	cases := [][]string{
+		{"enable", "--apply"},
+		{"disable", "extra"},
+		{"ignore"},
+		{"unignore"},
+		{"ignore", "--list", "postgres"},
+		{"unignore", "--list"},
+	}
+	for _, args := range cases {
+		if err := run(args, io.Discard); err == nil {
+			t.Fatalf("accepted %v", args)
+		}
+	}
+}
+
+func TestInvalidSavedPreferencesBlockEnableButPermitDisable(t *testing.T) {
+	deps := commandDeps(t)
+	store, err := config.DefaultStore()
+	requireNoError(t, err)
+	requireNoError(t, store.Add([]string{"postgres"}))
+	requireNoError(t, os.WriteFile(store.Path(), []byte("{"), 0o600))
+	if err := run([]string{"enable"}, io.Discard); err == nil {
+		t.Fatal("enabled with corrupt preferences")
+	}
+	if deps.background.installed {
+		t.Fatal("started service with corrupt preferences")
+	}
+	requireNoError(t, run([]string{"disable"}, io.Discard))
+	if !deps.background.uninstalled {
+		t.Fatal("invalid config blocked disable")
+	}
+}
+
+func requireNoError(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
 
 func run(args []string, out io.Writer) error {
 	ctx := context.Background()
@@ -1123,6 +1205,9 @@ type commandTestDeps struct {
 
 func commandDeps(t *testing.T) *commandTestDeps {
 	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	deps := &commandTestDeps{}
 	deps.scanner = &fakeScanner{}
 	deps.audit = &fakeAuditStore{}

@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,50 @@ import (
 	"github.com/yowainwright/pk/internal/config"
 	"github.com/yowainwright/pk/internal/process"
 )
+
+func TestMonitorReloadsIgnoresAndResetsGraceAfterUnignore(t *testing.T) {
+	cfg := baseConfig()
+	prefs := config.NewStore(filepath.Join(t.TempDir(), "config.json"))
+	requireNoError(t, cfg.UseStore(prefs))
+	killer := &fakeKiller{}
+	monitor := testMonitorWithKiller(cfg, killer)
+	monitor.lister = &fakeLister{procs: processes(overCPUProcess())}
+	monitor.check(t.Context())
+	monitor.offenses[42].firstSeen = time.Now().Add(-2 * time.Hour)
+	requireNoError(t, prefs.Add([]string{"node"}))
+	monitor.check(t.Context())
+	assertKilled(t, killer)
+	if len(monitor.offenses) != 0 {
+		t.Fatal("ignored process retained an offense")
+	}
+	requireNoError(t, prefs.Remove([]string{"node"}))
+	monitor.check(t.Context())
+	assertKilled(t, killer)
+	if len(monitor.offenses) != 1 {
+		t.Fatal("unignore did not resume monitoring")
+	}
+}
+
+func TestMonitorSkipsCleanupWhenPreferencesBecomeInvalid(t *testing.T) {
+	cfg := baseConfig()
+	prefs := config.NewStore(filepath.Join(t.TempDir(), "config.json"))
+	requireNoError(t, cfg.UseStore(prefs))
+	killer := &fakeKiller{}
+	monitor := testMonitorWithKiller(cfg, killer)
+	monitor.lister = &fakeLister{procs: processes(overCPUProcess())}
+	monitor.check(t.Context())
+	monitor.offenses[42].firstSeen = time.Now().Add(-2 * time.Hour)
+	requireNoError(t, os.WriteFile(prefs.Path(), []byte("{"), 0o600))
+	monitor.check(t.Context())
+	assertKilled(t, killer)
+}
+
+func requireNoError(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
 
 const (
 	previewMode = false

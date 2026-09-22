@@ -30,11 +30,15 @@ func (i Installer) Install() error {
 	if err := i.validate(); err != nil {
 		return err
 	}
-	if err := writePlugin(i.PluginPath(), i.Executable); err != nil {
+	previous, err := readPlugin(i.PluginPath())
+	if err != nil {
 		return err
 	}
+	if err := writePlugin(i.PluginPath(), i.Executable); err != nil {
+		return rollbackPluginInstall(i.PluginPath(), previous, err)
+	}
 	if err := appendSourceLine(i.ZshrcPath(), i.SourceLine()); err != nil {
-		return rollbackPluginInstall(i.PluginPath(), err)
+		return rollbackPluginInstall(i.PluginPath(), previous, err)
 	}
 	return nil
 }
@@ -202,7 +206,18 @@ func removePlugin(path string) error {
 	return err
 }
 
-func rollbackPluginInstall(path string, cause error) error {
+func readPlugin(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	return data, err
+}
+
+func rollbackPluginInstall(path string, previous []byte, cause error) error {
+	if previous != nil {
+		return errors.Join(cause, os.WriteFile(path, previous, pluginMode))
+	}
 	if err := removePlugin(path); err != nil {
 		return errors.Join(cause, fmt.Errorf("removing shell plugin: %w", err))
 	}

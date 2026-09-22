@@ -7,10 +7,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/yowainwright/pk/internal/config"
 	pkShell "github.com/yowainwright/pk/internal/shell"
 )
 
@@ -31,12 +35,14 @@ type Manager struct {
 	zdotdir    string
 	uid        string
 	runner     Runner
+	configPath string
+	since      int64
 }
 
 type commandRunner struct{}
 
 func DefaultManager() (*Manager, error) {
-	executable, err := os.Executable()
+	executable, err := installationExecutable()
 	if err != nil {
 		return nil, fmt.Errorf("finding executable: %w", err)
 	}
@@ -46,7 +52,47 @@ func DefaultManager() (*Manager, error) {
 	}
 	manager := NewManager(runtime.GOOS, home, executable, currentUID(), commandRunner{})
 	manager.zdotdir = os.Getenv("ZDOTDIR")
-	return manager, nil
+	return manager, manager.configurePreferences()
+}
+
+func installationExecutable() (string, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	invoked, err := exec.LookPath(os.Args[0])
+	if err != nil {
+		return executable, nil
+	}
+	return stableExecutable(executable, invoked), nil
+}
+
+func stableExecutable(executable string, invoked string) string {
+	absolute, err := filepath.Abs(invoked)
+	if err != nil {
+		return executable
+	}
+	actual, err := os.Stat(executable)
+	if err != nil {
+		return executable
+	}
+	entrypoint, err := os.Stat(absolute)
+	if err != nil {
+		return executable
+	}
+	if os.SameFile(actual, entrypoint) {
+		return absolute
+	}
+	return executable
+}
+
+func (m *Manager) configurePreferences() error {
+	store, err := config.DefaultStore()
+	if err != nil {
+		return err
+	}
+	m.configPath = store.Path()
+	return nil
 }
 
 func NewManager(
@@ -60,16 +106,59 @@ func NewManager(
 }
 
 func (m *Manager) Install(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
+	return m.withLock(ctx, m.install)
+}
+
+func (m *Manager) install(ctx context.Context) error {
+	if err := m.checkSupported(); err != nil {
 		return err
 	}
-	if err := m.installService(ctx); err != nil {
+	previous, err := readRegistration(m.servicePath())
+	if err != nil {
 		return err
+	}
+	m.since = registrationSince(previous)
+	if bytes.Equal(previous, m.registration()) {
+		return m.resume(ctx)
+	}
+	return m.replaceService(ctx, previous)
+}
+
+func (m *Manager) replaceService(ctx context.Context, previous []byte) error {
+	if err := m.installService(ctx); err != nil {
+		return m.restoreRegistration(previous, err)
+	}
+	if err := m.waitRunning(ctx); err != nil {
+		cause := m.rollbackServiceAfterShellInstall(err)
+		return m.restoreRegistration(previous, cause)
 	}
 	if err := m.shellInstaller().Install(); err != nil {
-		return m.rollbackServiceAfterShellInstall(err)
+		cause := m.rollbackServiceAfterShellInstall(err)
+		return m.restoreRegistration(previous, cause)
 	}
 	return nil
+}
+
+func (m *Manager) resume(ctx context.Context) error {
+	if err := m.shellInstaller().Install(); err != nil {
+		return err
+	}
+	if m.goos == "darwin" {
+		if err := m.resumeLaunchd(ctx); err != nil {
+			return err
+		}
+		return m.waitRunning(ctx)
+	}
+	if m.goos == "linux" {
+		if err := m.enableSystemd(ctx); err != nil {
+			return err
+		}
+		if err := m.runner.Run(ctx, "systemctl", "--user", "restart", systemdUnit); err != nil {
+			return err
+		}
+		return m.waitRunning(ctx)
+	}
+	return unsupported(m.goos)
 }
 
 func (m *Manager) rollbackServiceAfterShellInstall(cause error) error {
@@ -93,6 +182,10 @@ func (m *Manager) installService(ctx context.Context) error {
 }
 
 func (m *Manager) Uninstall(ctx context.Context) error {
+	return m.withLock(ctx, m.uninstall)
+}
+
+func (m *Manager) uninstall(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -102,13 +195,61 @@ func (m *Manager) Uninstall(ctx context.Context) error {
 }
 
 func (m *Manager) uninstallService(ctx context.Context) error {
+	if err := m.checkSupported(); err != nil {
+		return err
+	}
 	if m.goos == "darwin" {
 		return m.uninstallLaunchd(ctx)
 	}
 	if m.goos == "linux" {
+		absent, err := m.systemdAbsent(ctx)
+		finished := err != nil || absent
+		if finished {
+			return err
+		}
 		return m.uninstallSystemd(ctx)
 	}
 	return unsupported(m.goos)
+}
+
+func readRegistration(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	return data, err
+}
+
+var sinceArgument = regexp.MustCompile(`--since(?:</string>\s*<string>|" ")([0-9]+)`)
+
+func registrationSince(data []byte) int64 {
+	match := sinceArgument.FindSubmatch(data)
+	if len(match) == 2 {
+		value, err := strconv.ParseInt(string(match[1]), 10, 64)
+		valid := err == nil && value > 0
+		if valid {
+			return value
+		}
+	}
+	return time.Now().UnixMilli()
+}
+
+func (m *Manager) registration() []byte {
+	if m.goos == "darwin" {
+		return launchdPlist(m.launchdDefinition())
+	}
+	return systemdUnitFile(m.command())
+}
+
+func (m *Manager) systemdAbsent(ctx context.Context) (bool, error) {
+	if m.installed() {
+		return false, nil
+	}
+	output, err := m.runner.Output(ctx, "systemctl", "--user", "show", systemdUnit,
+		"--property=LoadState", "--property=ActiveState")
+	absent := strings.Contains(string(output), "LoadState=not-found\n")
+	inactive := strings.Contains(string(output), "ActiveState=inactive\n")
+	return absent && inactive, err
 }
 
 func (m *Manager) Status(ctx context.Context) (string, error) {
@@ -179,7 +320,14 @@ func serviceArgs() []string {
 
 func (m *Manager) command() []string {
 	command := []string{m.executable}
-	return append(command, serviceArgs()...)
+	command = append(command, serviceArgs()...)
+	if m.configPath != "" {
+		command = append(command, "--config", m.configPath)
+	}
+	if m.since > 0 {
+		command = append(command, "--since", strconv.FormatInt(m.since, 10))
+	}
+	return command
 }
 
 func (m *Manager) shellInstaller() pkShell.Installer {
@@ -217,6 +365,8 @@ func removeFile(path string) error {
 func quoteSystemdArg(arg string) string {
 	escaped := strings.ReplaceAll(arg, `\`, `\\`)
 	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+	escaped = strings.ReplaceAll(escaped, `%`, `%%`)
+	escaped = strings.ReplaceAll(escaped, `$`, `$$`)
 	quote := `"`
 	quoted := quote + escaped
 	return quoted + quote

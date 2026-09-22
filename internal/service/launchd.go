@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 )
 
@@ -25,6 +26,16 @@ func (m *Manager) installLaunchd(ctx context.Context) error {
 		return m.rollbackLaunchdInstall(cause)
 	}
 	return nil
+}
+
+func (m *Manager) resumeLaunchd(ctx context.Context) error {
+	_, err := m.runner.Output(ctx, "launchctl", "print", m.launchdService())
+	if err != nil {
+		if err := m.bootstrapLaunchd(ctx); err != nil {
+			return fmt.Errorf("loading launchd service: %w", err)
+		}
+	}
+	return m.kickstartLaunchd(ctx)
 }
 
 func (m *Manager) uninstallLaunchd(ctx context.Context) error {
@@ -55,18 +66,27 @@ func (m *Manager) restoreLaunchd(cause error) error {
 }
 
 func (m *Manager) stopLaunchd(ctx context.Context) error {
-	err := m.runner.Run(ctx, "launchctl", "bootout", m.launchdDomain(), m.servicePath())
+	err := m.runner.Run(ctx, "launchctl", "bootout", m.launchdService())
 	commandStopped := err == nil
 	contextCanceled := ctx.Err() != nil
 	operationFinished := commandStopped || contextCanceled
 	if operationFinished {
 		return err
 	}
-	_, statusErr := m.runner.Output(ctx, "launchctl", "print", m.launchdService())
-	if statusErr != nil {
+	if launchdMissing(err) {
 		return nil
 	}
 	return fmt.Errorf("stopping launchd service: %w", err)
+}
+
+func launchdMissing(err error) bool {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		return false
+	}
+	code := exit.ExitCode()
+	missing := code == 3 || code == 113
+	return missing
 }
 
 func (m *Manager) bootstrapLaunchd(ctx context.Context) error {

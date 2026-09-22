@@ -15,6 +15,10 @@ type Config struct {
 	GracePeriod     time.Duration
 	StaleLimit      time.Duration
 	Protected       []string
+	SessionSince    int64
+	store           *Store
+	baseProtected   []string
+	preferencesPath string
 }
 
 var defaultProtected = []string{
@@ -65,7 +69,44 @@ func ParseArgsWithOutput(
 	if err := parseFlags(name, args, flags); err != nil {
 		return nil, err
 	}
-	return finishConfig(cfg, *protectedStr)
+	return finishSavedConfig(cfg, *protectedStr)
+}
+
+func finishSavedConfig(cfg *Config, protected string) (*Config, error) {
+	if _, err := finishConfig(cfg, protected); err != nil {
+		return nil, err
+	}
+	store, err := preferencesStore(cfg.preferencesPath)
+	if err != nil {
+		return nil, err
+	}
+	return cfg, cfg.UseStore(store)
+}
+
+func preferencesStore(path string) (*Store, error) {
+	if path != "" {
+		return NewStore(path), nil
+	}
+	return DefaultStore()
+}
+
+func (c *Config) UseStore(store *Store) error {
+	c.store = store
+	c.baseProtected = append([]string{}, c.Protected...)
+	return c.Reload()
+}
+
+func (c *Config) Reload() error {
+	if c.store == nil {
+		return nil
+	}
+	names, err := c.store.Names()
+	if err != nil {
+		return fmt.Errorf("loading saved ignores: %w", err)
+	}
+	base := append([]string{}, c.baseProtected...)
+	c.Protected = append(base, names...)
+	return nil
 }
 
 func configFlags(
@@ -77,10 +118,19 @@ func configFlags(
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(output)
 	protectedStr := registerFlags(flags, cfg)
+	registerDaemonFlags(name, flags, cfg)
 	if registerExtra != nil {
 		registerExtra(flags)
 	}
 	return cfg, flags, protectedStr
+}
+
+func registerDaemonFlags(name string, flags *flag.FlagSet, cfg *Config) {
+	if name != "__daemon" {
+		return
+	}
+	flags.StringVar(&cfg.preferencesPath, "config", "", "Saved preferences path")
+	flags.Int64Var(&cfg.SessionSince, "since", 0, "Earliest shell creation time in milliseconds")
 }
 
 func parseFlags(name string, args []string, flags *flag.FlagSet) error {
@@ -124,6 +174,9 @@ func protectedNames(protectedStr string) []string {
 }
 
 func validate(cfg *Config) error {
+	if cfg.SessionSince < 0 {
+		return fmt.Errorf("session start time must not be negative")
+	}
 	if cfg.Interval <= 0 {
 		return fmt.Errorf("interval must be positive")
 	}

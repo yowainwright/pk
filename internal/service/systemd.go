@@ -20,6 +20,10 @@ func (m *Manager) installSystemd(ctx context.Context) error {
 		cause := fmt.Errorf("starting systemd service: %w", err)
 		return m.rollbackSystemdInstall(cause)
 	}
+	if err := m.runner.Run(ctx, "systemctl", "--user", "restart", systemdUnit); err != nil {
+		cause := fmt.Errorf("restarting systemd service: %w", err)
+		return m.rollbackSystemdInstall(cause)
+	}
 	return nil
 }
 

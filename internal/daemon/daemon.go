@@ -79,7 +79,10 @@ func (r *Runner) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	state = applyEvents(state, events)
+	if err := r.cfg.Reload(); err != nil {
+		return r.saveError(state, err)
+	}
+	state = r.applyCurrentEvents(state, events)
 	procs, err := r.lister.List(ctx)
 	if err != nil {
 		return r.saveError(state, err)
@@ -89,6 +92,46 @@ func (r *Runner) Tick(ctx context.Context) error {
 		return r.saveError(state, err)
 	}
 	return r.finishTick(state, events)
+}
+
+func (r *Runner) applyCurrentEvents(
+	state lifecycle.State,
+	events []lifecycle.Event,
+) lifecycle.State {
+	if r.cfg.SessionSince == 0 {
+		return applyEvents(state, events)
+	}
+	r.removeEarlierSessions(&state)
+	current := make([]lifecycle.Event, 0, len(events))
+	for _, event := range events {
+		if r.currentEvent(event) {
+			current = append(current, event)
+		}
+	}
+	return applyEvents(state, current)
+}
+
+func (r *Runner) currentEvent(event lifecycle.Event) bool {
+	if event.ObservedAt.UnixMilli() < r.cfg.SessionSince {
+		return false
+	}
+	if lifecycleRequiresSession(event.Kind) {
+		return event.ShellCreateTime >= r.cfg.SessionSince
+	}
+	return true
+}
+
+func (r *Runner) removeEarlierSessions(state *lifecycle.State) {
+	for id, session := range state.Sessions {
+		if session.ShellProcessKey.CreateTime < r.cfg.SessionSince {
+			delete(state.Sessions, id)
+		}
+	}
+	for key, proc := range state.Processes {
+		if _, exists := state.Sessions[proc.TerminalSessionID]; !exists {
+			delete(state.Processes, key)
+		}
+	}
 }
 
 func (r *Runner) finishTick(state lifecycle.State, events []lifecycle.Event) error {
