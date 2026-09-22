@@ -41,20 +41,78 @@ func zshFixture(t *testing.T) (Installer, string) {
 
 func runZshPrompt(t *testing.T, installer Installer, eventsPath string, exitCode string) {
 	t.Helper()
+	runZshScript(t, installer, eventsPath, zshPromptScript, exitCode)
+}
+
+func runZshScript(
+	t *testing.T,
+	installer Installer,
+	eventsPath string,
+	script string,
+	extra string,
+) {
+	t.Helper()
+	zsh := requireZsh(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	pluginPath := installer.PluginPath()
+	args := []string{"-dfi", "-c", script, "pk-test", pluginPath, extra}
+	command := exec.CommandContext(ctx, zsh, args...)
+	command.Env = zshEnvironment(installer.Home, eventsPath)
+	assertZshScript(t, command)
+}
+
+func zshEnvironment(home string, eventsPath string) []string {
+	environment := zshTestEnvironment()
+	eventLog := "PK_TEST_EVENT_LOG=" + eventsPath
+	homeEntry := "HOME=" + home
+	return append(environment, eventLog, homeEntry)
+}
+
+func requireZsh(t *testing.T) string {
+	t.Helper()
 	zsh, err := exec.LookPath("zsh")
 	if err != nil {
 		t.Skip("zsh is required for shell integration tests")
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	pluginPath := installer.PluginPath()
-	args := []string{"-dfi", "-c", zshPromptScript, "pk-test", pluginPath, exitCode}
-	command := exec.CommandContext(ctx, zsh, args...)
-	command.Env = append(zshTestEnvironment(), "PK_TEST_EVENT_LOG="+eventsPath)
+	return zsh
+}
+
+func assertZshScript(t *testing.T, command *exec.Cmd) {
+	t.Helper()
 	output, err := command.CombinedOutput()
 	failed := err != nil || len(output) != 0
 	if failed {
 		t.Fatalf("running zsh prompt: %v\n%s", err, output)
+	}
+}
+
+func TestLoadedZshHookStopsEmittingWhenDisabled(t *testing.T) {
+	installer, eventsPath := zshFixture(t)
+	script := "source \"$1\"\ncommand rm -- \"$1\"\n_pk_preexec\n_pk_precmd\n_pk_zshexit\n"
+	runZshScript(t, installer, eventsPath, script, "")
+	events := readFile(t, eventsPath)
+	assertZshEventCount(t, events, "session.start", 1)
+	assertZshEventCount(t, events, "command.start", 0)
+	assertZshEventCount(t, events, "session.stop", 0)
+}
+
+func TestFailedReinstallPreservesWorkingPlugin(t *testing.T) {
+	installer := testInstaller(t)
+	if err := installer.Install(); err != nil {
+		t.Fatal(err)
+	}
+	before := readFile(t, installer.PluginPath())
+	installer.Executable = "/different/pk"
+	installer.ZDOTDIR = filepath.Join(installer.Home, "blocked")
+	if err := os.WriteFile(installer.ZDOTDIR, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := installer.Install(); err == nil {
+		t.Fatal("expected shell failure")
+	}
+	if readFile(t, installer.PluginPath()) != before {
+		t.Fatal("lost original plugin")
 	}
 }
 

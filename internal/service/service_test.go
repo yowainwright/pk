@@ -7,7 +7,139 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestEnableReconcilesOldRegistrationAndPreservesCutoff(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux"} {
+		t.Run(goos, func(t *testing.T) {
+			runner := &fakeRunner{}
+			manager := testManager(t, goos, runner)
+			requireNoError(t, manager.Install(t.Context()))
+			first := manager.since
+			manager.executable = "/new/bin/pk"
+			manager.configPath = filepath.Join(manager.home, "preferences", "config.json")
+			requireNoError(t, manager.Install(t.Context()))
+			data := readServiceFile(t, manager)
+			assertContains(t, data, "/new/bin/pk")
+			assertContains(t, data, "--config")
+			if manager.since != first {
+				t.Fatal("repeated enable reset session cutoff")
+			}
+			requireNoError(t, manager.Install(t.Context()))
+			if readServiceFile(t, manager) != data {
+				t.Fatal("idempotent enable changed registration")
+			}
+		})
+	}
+}
+
+func TestStableExecutableRetainsVerifiedSymlink(t *testing.T) {
+	dir := t.TempDir()
+	actual := filepath.Join(dir, "pk-versioned")
+	invoked := filepath.Join(dir, "pk")
+	requireNoError(t, os.WriteFile(actual, []byte("binary"), 0o700))
+	requireNoError(t, os.Symlink(actual, invoked))
+	if got := stableExecutable(actual, invoked); got != invoked {
+		t.Fatalf("lost stable entrypoint: %s", got)
+	}
+	other := filepath.Join(dir, "different")
+	requireNoError(t, os.WriteFile(other, []byte("different binary"), 0o700))
+	if got := stableExecutable(actual, other); got != actual {
+		t.Fatalf("accepted unrelated entrypoint: %s", got)
+	}
+}
+
+func TestDisableStopsLaunchdEvenWithoutRegistrationFile(t *testing.T) {
+	runner := &fakeRunner{}
+	manager := testManager(t, "darwin", runner)
+	requireNoError(t, manager.Uninstall(t.Context()))
+	assertCommands(t, runner, "launchctl bootout gui/501/com.yowainwright.pk")
+}
+
+func TestDisableAbsentSystemdServiceIsIdempotent(t *testing.T) {
+	runner := &fakeRunner{output: []byte("LoadState=not-found\nActiveState=inactive\n")}
+	manager := testManager(t, "linux", runner)
+	requireNoError(t, manager.Uninstall(t.Context()))
+	requireNoError(t, manager.Uninstall(t.Context()))
+	assertCommandCount(t, runner, "systemctl --user disable", 0)
+}
+
+func TestEnableReportsServiceThatDoesNotStayRunning(t *testing.T) {
+	runner := &fakeRunner{output: []byte("inactive\n")}
+	manager := testManager(t, "linux", runner)
+	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Millisecond)
+	defer cancel()
+	err := manager.Install(ctx)
+	wrongError := err == nil || !strings.Contains(err.Error(), "did not start")
+	if wrongError {
+		t.Fatalf("reported successful enable: %v", err)
+	}
+}
+
+func TestFailedEnableRestoresPreviousRegistration(t *testing.T) {
+	runner := &fakeRunner{}
+	manager := testManager(t, "linux", runner)
+	requireNoError(t, manager.Install(t.Context()))
+	before := readServiceFile(t, manager)
+	manager.executable = "/new/bin/pk"
+	runner.failAt = len(runner.commands) + 2
+	runner.failErr = errors.New("enable failed")
+	if err := manager.Install(t.Context()); err == nil {
+		t.Fatal("expected enable error")
+	}
+	if readServiceFile(t, manager) != before {
+		t.Fatal("lost working registration")
+	}
+}
+
+func TestServiceOperationsWaitForSharedLock(t *testing.T) {
+	manager := testManager(t, "linux", &fakeRunner{})
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan error, 1)
+	go func() {
+		finished <- manager.withLock(t.Context(), func(context.Context) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Millisecond)
+	defer cancel()
+	err := manager.Uninstall(ctx)
+	close(release)
+	if operationErr := <-finished; operationErr != nil {
+		t.Fatal(operationErr)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("operation bypassed lock: %v", err)
+	}
+}
+
+func TestEnableRejectsSymlinkedServiceLock(t *testing.T) {
+	runner := &fakeRunner{}
+	manager := testManager(t, "linux", runner)
+	path := filepath.Join(manager.home, ".config", "pk", "service.lock")
+	requireNoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	target := filepath.Join(filepath.Dir(path), "other.lock")
+	requireNoError(t, os.WriteFile(target, nil, 0o600))
+	requireNoError(t, os.Symlink(filepath.Base(target), path))
+	if err := manager.Install(t.Context()); err == nil {
+		t.Fatal("accepted symlinked service lock")
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("changed service without its own lock: %v", runner.commands)
+	}
+}
+
+func requireNoError(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestInstallLaunchdWritesPlistAndStartsService(t *testing.T) {
 	runner := &fakeRunner{}
@@ -366,6 +498,13 @@ func (r *fakeRunner) Output(ctx context.Context, name string, args ...string) ([
 	r.commands = append(r.commands, commandString(name, args))
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	defaultOutput := r.output == nil && r.err == nil
+	if defaultOutput {
+		if name == "launchctl" {
+			return []byte("state = running\n"), nil
+		}
+		return []byte("active\n"), nil
 	}
 	return r.output, r.err
 }

@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -172,7 +173,20 @@ func (a application) dispatch(command string, args []string) error {
 	if handled {
 		return err
 	}
-	return a.dispatchUtility(command, args)
+	return a.dispatchSettings(command, args)
+}
+
+func (a application) dispatchSettings(command string, args []string) error {
+	switch command {
+	case "enable":
+		return a.runEnable(args)
+	case "disable":
+		return a.runDisable(args)
+	case "ignore", "unignore":
+		return a.runIgnore(command, args)
+	default:
+		return a.dispatchUtility(command, args)
+	}
 }
 
 func (a application) dispatchPrimary(command string, args []string) (bool, error) {
@@ -289,10 +303,22 @@ func collectCleanupResults(
 	cfg *config.Config,
 	options cleanupOptions,
 ) (cleanupResults, error) {
+	if err := cfg.Reload(); err != nil {
+		return cleanupResults{}, err
+	}
 	log, err := newAuditStore()
 	if err != nil {
 		return cleanupResults{}, operationError("opening audit store", err)
 	}
+	return collectAuditedCleanup(ctx, cfg, options, log)
+}
+
+func collectAuditedCleanup(
+	ctx context.Context,
+	cfg *config.Config,
+	options cleanupOptions,
+	log auditStore,
+) (cleanupResults, error) {
 	results, err := runProcessCleanup(ctx, cfg, options, log)
 	if err != nil {
 		return cleanupResults{}, operationError("cleaning processes", err)
@@ -445,11 +471,104 @@ func (a application) runInstall(args []string) error {
 }
 
 func installBackground(ctx context.Context) error {
+	if err := validateSavedIgnores(); err != nil {
+		return err
+	}
 	manager, err := newBackgroundManager()
 	if err != nil {
 		return operationError("opening background manager", err)
 	}
 	return operationError("installing background cleanup", manager.Install(ctx))
+}
+
+func validateSavedIgnores() error {
+	store, err := config.DefaultStore()
+	if err != nil {
+		return err
+	}
+	_, err = store.Names()
+	return err
+}
+
+func (a application) runEnable(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("enable does not accept arguments")
+	}
+	err := a.ui.Task(a.ctx, "Enabling background cleanup", installBackground)
+	if err != nil {
+		return err
+	}
+	return a.ui.Value(
+		"Background cleanup enabled. Starts at login. Open a new zsh tab to begin tracking.",
+	)
+}
+
+func (a application) runDisable(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("disable does not accept arguments")
+	}
+	err := a.ui.Task(a.ctx, "Disabling background cleanup", uninstallBackground)
+	if err != nil {
+		return err
+	}
+	return a.ui.Value("Background cleanup disabled. Saved ignores and history preserved.")
+}
+
+func (a application) runIgnore(command string, args []string) error {
+	flags := flag.NewFlagSet(command, flag.ContinueOnError)
+	flags.SetOutput(a.ui.ErrorWriter())
+	var list bool
+	if command == "ignore" {
+		defaultList := false
+		flags.BoolVar(&list, "list", defaultList, "List saved process-name ignores")
+	}
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	return a.changeIgnores(command, flags.Args(), list)
+}
+
+func (a application) changeIgnores(command string, names []string, list bool) error {
+	if err := validateIgnoreArguments(names, list); err != nil {
+		return err
+	}
+	store, err := config.DefaultStore()
+	if err != nil {
+		return err
+	}
+	if list {
+		return a.listIgnores(store)
+	}
+	if err := updateIgnores(store, command, names); err != nil {
+		return err
+	}
+	return a.ui.Value("Saved ignores updated. Running cleanup loads them before its next pass.")
+}
+
+func validateIgnoreArguments(names []string, list bool) error {
+	hasNames := len(names) > 0
+	if hasNames == list {
+		return fmt.Errorf("provide process names, or use ignore --list without names")
+	}
+	return nil
+}
+
+func updateIgnores(store *config.Store, command string, names []string) error {
+	if command == "unignore" {
+		return store.Remove(names)
+	}
+	return store.Add(names)
+}
+
+func (a application) listIgnores(store *config.Store) error {
+	names, err := store.Names()
+	if err != nil {
+		return err
+	}
+	if len(names) == 0 {
+		return a.ui.Value("No saved ignores. Built-in protections still apply.")
+	}
+	return a.ui.Value(strings.Join(names, "\n"))
 }
 
 func (a application) runUninstall() error {
@@ -763,14 +882,26 @@ func (a application) runDaemon(args []string) error {
 	if err != nil {
 		return operationError("parsing daemon options", err)
 	}
-	store, log, err := daemonStores()
+	store, log, err := daemonStores(cfg)
 	if err != nil {
 		return err
 	}
 	return newDaemonRunner(cfg, store, log).Run(a.ctx)
 }
 
-func daemonStores() (lifecycleStore, auditStore, error) {
+func daemonStores(cfg *config.Config) (lifecycleStore, auditStore, error) {
+	dir := cfg.StateDir()
+	if dir == "" {
+		return defaultDaemonStores()
+	}
+	path := os.Getenv("PK_AUDIT_PATH")
+	if path == "" {
+		path = filepath.Join(dir, "events.jsonl")
+	}
+	return lifecycle.NewStore(dir), audit.New(path), nil
+}
+
+func defaultDaemonStores() (lifecycleStore, auditStore, error) {
 	store, err := newLifecycleStore()
 	if err != nil {
 		return nil, nil, operationError("opening lifecycle store", err)
@@ -840,8 +971,7 @@ func parseSessionFlags(
 	}
 	var pids sessionPIDs
 	var exitCode exitCodeArg
-	flags := flag.NewFlagSet("__session", flag.ContinueOnError)
-	flags.SetOutput(output)
+	flags := sessionFlagSet(output)
 	registerSessionFlags(flags, &event, &pids, &exitCode)
 	if err := flags.Parse(args); err != nil {
 		return lifecycle.Event{}, exitCodeArg{}, err
@@ -850,6 +980,12 @@ func parseSessionFlags(
 		return lifecycle.Event{}, exitCodeArg{}, err
 	}
 	return event, exitCode, nil
+}
+
+func sessionFlagSet(output io.Writer) *flag.FlagSet {
+	flags := flag.NewFlagSet("__session", flag.ContinueOnError)
+	flags.SetOutput(output)
+	return flags
 }
 
 func newSessionEvent() (lifecycle.Event, error) {

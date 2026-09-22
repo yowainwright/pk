@@ -17,6 +17,7 @@ _pk_optional_arg() {
 }
 
 _pk_emit() {
+  [[ -r "$_pk_plugin" ]] || return 0
   local kind="${1:?}"
   local exit_code="${2:-}"
   local args
@@ -29,12 +30,17 @@ _pk_emit() {
     --parent-pid "$PPID"
     --cwd "$PWD"
   )
+  _pk_emit_context "$exit_code"
+  "$_pk_bin" "${args[@]}" >/dev/null 2>&1
+}
+
+_pk_emit_context() {
+  local exit_code="${1:-}"
   _pk_optional_arg --tab-id "$_pk_tab_id"
   _pk_optional_arg --window-id "$_pk_window_id"
   _pk_optional_arg --agent-session-id "$_pk_agent_session_id"
   _pk_optional_arg --user-session-id "$_pk_user_session_id"
   _pk_optional_arg --exit-code "$exit_code"
-  "$_pk_bin" "${args[@]}" >/dev/null 2>&1
 }
 
 _pk_preexec() {
@@ -64,6 +70,7 @@ _pk_setup() {
   [[ -z "${PK_DISABLE_SESSION:-}" ]] || return 0
   [[ -z "${PK_TERMINAL_SESSION_ID:-}" ]] || return 0
   typeset -g _pk_bin="__PK_EXECUTABLE__"
+  typeset -g _pk_plugin="$HOME/.config/pk/shell/pk.zsh"
   [[ -x "$_pk_bin" ]] || return 0
   autoload -Uz add-zsh-hook || return 0
   PK_TERMINAL_SESSION_ID="$("$_pk_bin" __session-id 2>/dev/null)"

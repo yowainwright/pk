@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -43,6 +44,9 @@ func runSuite(m *testing.M) int {
 		return 1
 	}
 	code := m.Run()
+	if suiteDir == "" {
+		return code
+	}
 	err := os.RemoveAll(suiteDir)
 	cleanupFailed := err != nil
 	testsPassed := code == 0
@@ -55,9 +59,17 @@ func runSuite(m *testing.M) int {
 }
 
 func setupSuite() error {
+	if binary := os.Getenv("PK_E2E_BINARY"); binary != "" {
+		pkBinary = binary
+		return nil
+	}
 	repositoryRoot = findRepositoryRoot()
 	var err error
-	suiteDir, err = os.MkdirTemp("", "pk-e2e-")
+	buildDir := filepath.Join(repositoryRoot, "tmp")
+	if err := os.MkdirAll(buildDir, 0o700); err != nil {
+		return err
+	}
+	suiteDir, err = os.MkdirTemp(buildDir, "pk-e2e-")
 	if err != nil {
 		return fmt.Errorf("creating suite directory: %w", err)
 	}
@@ -104,6 +116,32 @@ func TestRootHelpIsSafe(t *testing.T) {
 	if !strings.Contains(result.stdout, "pk tracks local terminal sessions") {
 		t.Fatalf("unexpected root help:\n%s", result.stdout)
 	}
+}
+
+func TestConcurrentCLIIgnoresPreserveEverySuccessfulUpdate(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var group sync.WaitGroup
+	for index := range 12 {
+		group.Go(func() {
+			name := fmt.Sprintf("worker-%02d", index)
+			result := runCLI(t, "ignore", name)
+			if result.err != nil {
+				t.Errorf("ignore %s: %v\n%s", name, result.err, result.stderr)
+			}
+		})
+	}
+	group.Wait()
+	assertSavedWorkers(t)
+}
+
+func assertSavedWorkers(t *testing.T) {
+	t.Helper()
+	var expected []string
+	for index := range 12 {
+		expected = append(expected, fmt.Sprintf("worker-%02d", index))
+	}
+	assertCommandOutput(t, []string{"ignore", "--list"}, strings.Join(expected, "\n")+"\n")
 }
 
 func TestVersionUsesReleaseMetadata(t *testing.T) {
@@ -237,7 +275,11 @@ func TestBackgroundServiceLifecycle(t *testing.T) {
 	assertFileContains(t, path, "__daemon")
 	assertFileContains(t, filepath.Join(home, ".config", "pk", "shell", "pk.zsh"), "__session")
 	assertFileContains(t, filepath.Join(home, ".zshrc"), "# pk")
-	assertCommandOutput(t, []string{"status"}, "active\n")
+	status := "active\n"
+	if runtime.GOOS == "darwin" {
+		status = "state = running\n"
+	}
+	assertCommandOutput(t, []string{"status"}, status)
 	assertCommandOutput(t, []string{"uninstall"}, "uninstalled\n")
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("service file still exists: %s", path)
@@ -295,9 +337,32 @@ func writeExecutable(t *testing.T, path string, contents string) {
 
 const fakeServiceTool = `#!/bin/sh
 case "$*" in
-  *print*|*is-active*) printf '%s\n' active ;;
+  *print*) printf '%s\n' 'state = running' ;;
+  *is-active*) printf '%s\n' active ;;
+  *show*) printf '%s\n' 'LoadState=not-found' 'ActiveState=inactive' ;;
 esac
 `
+
+func TestEnableDisablePreservesSavedIgnoresAndHistory(t *testing.T) {
+	tool, servicePath := serviceFixture(t)
+	home := t.TempDir()
+	binDir := t.TempDir()
+	writeExecutable(t, filepath.Join(binDir, tool), fakeServiceTool)
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("PATH", binDir)
+	for _, args := range [][]string{{"ignore", "postgres"}, {"enable"}, {"enable"}, {"disable"}, {"disable"}} {
+		result := runCLI(t, args...)
+		if result.err != nil {
+			t.Fatalf("pk %v: %v\n%s", args, result.err, result.stderr)
+		}
+	}
+	assertCommandOutput(t, []string{"ignore", "--list"}, "postgres\n")
+	if _, err := os.Stat(servicePath(home)); !os.IsNotExist(err) {
+		t.Fatalf("service remains: %v", err)
+	}
+	assertHelpRoute(t, []string{"help", "enable"}, "Usage: pk enable")
+}
 
 func TestDockerCleanupApplyIsAudited(t *testing.T) {
 	fixture := setupDockerFixture(t)

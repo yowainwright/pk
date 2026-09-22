@@ -13,6 +13,11 @@ import (
 const reaperCommand = "reap"
 
 func main() {
+	service := len(os.Args) > 1 && os.Args[1] == "service"
+	if service {
+		runService(os.Args[2:])
+		return
+	}
 	if isReaper(os.Args) {
 		runReaper(os.Args[2], os.Args[3], os.Args[4])
 		return

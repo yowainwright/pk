@@ -20,8 +20,13 @@ Commands:
   status               Show daemon status
   obs                  Show daemon observability
   history              Show cleanup audit events
-  install --apply      Install the daemon and shell lifecycle plugin
-  uninstall            Remove the daemon and shell lifecycle plugin
+  enable               Start background cleanup and enable startup at login
+  disable              Stop background cleanup and disable startup at login
+  ignore NAME...       Save process names to protect from cleanup
+  ignore --list        List saved process-name ignores
+  unignore NAME...     Remove saved process-name ignores
+  install --apply      Compatibility alias for enable
+  uninstall            Compatibility alias for disable
   doctor               Print a shareable diagnostic report
   version              Print the version
 
@@ -60,6 +65,35 @@ const installUsage = `Usage: pk install --apply
 Installs the supervised daemon and zsh lifecycle plugin for the current user.
 The explicit --apply flag is required because the daemon can terminate
 processes after session lifecycle signals.
+`
+
+const enableUsage = `Usage: pk enable
+
+Starts automatic background cleanup and enables startup at login.
+Saved ignores are loaded before cleanup. Open a new zsh tab to begin tracking.
+After disable and enable, only fresh shell sessions are tracked.
+`
+
+const disableUsage = `Usage: pk disable
+
+Stops background cleanup and removes automatic startup and the zsh hook.
+Keeps the executable, saved ignores, and retained history.
+`
+
+const ignoreUsage = `Usage: pk ignore NAME... | pk ignore --list
+
+Saves exact, case-sensitive process names for background and manual process cleanup.
+Quote names containing spaces. Rules apply across projects, not to child processes
+with different names or Docker containers. --list shows saved user rules.
+Running cleanup loads saved changes before its next pass; in-flight work may finish.
+Preferences: macOS ~/Library/Application Support/pk/config.json;
+Linux $XDG_CONFIG_HOME/pk/config.json, or ~/.config/pk/config.json.
+`
+
+const unignoreUsage = `Usage: pk unignore NAME...
+
+Removes saved user rules. Built-in process protections remain in effect.
+Running cleanup loads saved changes before its next pass.
 `
 
 func runInformational(args []string, ui *dx.UI) (bool, error) {
@@ -114,6 +148,10 @@ func helpTopic(args []string) (string, bool) {
 	if !hasHelpFlag(args) {
 		return "", false
 	}
+	settingsCommand := args[0] == "ignore" || args[0] == "unignore"
+	if settingsCommand {
+		return args[0], true
+	}
 	return strings.Join(leadingCommand(args), " "), true
 }
 
@@ -154,7 +192,22 @@ func usageForTopic(topic string) (string, bool) {
 	if ok {
 		return usage, true
 	}
-	return utilityUsage(topic)
+	return settingsUsage(topic)
+}
+
+func settingsUsage(topic string) (string, bool) {
+	switch topic {
+	case "enable":
+		return enableUsage, true
+	case "disable":
+		return disableUsage, true
+	case "ignore":
+		return ignoreUsage, true
+	case "unignore":
+		return unignoreUsage, true
+	default:
+		return utilityUsage(topic)
+	}
 }
 
 func primaryUsage(topic string) (string, bool) {

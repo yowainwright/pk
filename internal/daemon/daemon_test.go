@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,99 @@ import (
 	"github.com/yowainwright/pk/internal/lifecycle"
 	"github.com/yowainwright/pk/internal/process"
 )
+
+func TestTickReloadsSavedIgnores(t *testing.T) {
+	store := newFakeStore(sessionStartEvent(), sessionStopEvent())
+	killer := &fakeKiller{}
+	runner := testRunner(store, killer)
+	store.state.Processes[childProcessKey()] = managedChild()
+	store.procs = []process.Process{childProcess()}
+	prefs := config.NewStore(filepath.Join(t.TempDir(), "config.json"))
+	requireNoError(t, runner.cfg.UseStore(prefs))
+	requireNoError(t, prefs.Add([]string{childProcess().Name}))
+	requireNoError(t, runner.Tick(t.Context()))
+	if killer.called {
+		t.Fatal("killed newly ignored process")
+	}
+	requireNoError(t, prefs.Remove([]string{childProcess().Name}))
+	requireNoError(t, runner.Tick(t.Context()))
+	if !killer.called {
+		t.Fatal("unignore did not restore cleanup")
+	}
+}
+
+func TestTickRejectsMalformedPreferencesBeforeKilling(t *testing.T) {
+	store := newFakeStore(sessionStartEvent(), sessionStopEvent())
+	killer := &fakeKiller{}
+	runner := testRunner(store, killer)
+	store.state.Processes[childProcessKey()] = managedChild()
+	store.procs = []process.Process{childProcess()}
+	prefs := config.NewStore(filepath.Join(t.TempDir(), "config.json"))
+	requireNoError(t, runner.cfg.UseStore(prefs))
+	requireNoError(t, os.WriteFile(prefs.Path(), []byte("{"), 0o600))
+	if err := runner.Tick(t.Context()); err == nil {
+		t.Fatal("accepted malformed preferences")
+	}
+	acted := killer.called || store.acknowledged
+	if acted {
+		t.Fatal("acted on invalid policy")
+	}
+	if store.state.LastError == "" {
+		t.Fatal("preference error not observable")
+	}
+}
+
+func TestReenableDiscardsOldSessionsWithoutKilling(t *testing.T) {
+	store := newFakeStore(sessionStartEvent(), sessionStopEvent())
+	store.state = applyEvents(store.state, store.events)
+	store.state.Processes[childProcessKey()] = managedChild()
+	store.procs = []process.Process{childProcess()}
+	killer := &fakeKiller{}
+	runner := testRunner(store, killer)
+	runner.cfg.SessionSince = shellProcess().CreateTime + 1
+	requireNoError(t, runner.Tick(t.Context()))
+	if killer.called {
+		t.Fatal("re-enable killed an old tracked process")
+	}
+	retained := len(store.state.Processes) != 0 || len(store.state.Sessions) != 0
+	if retained {
+		t.Fatal("retained sessions from before re-enable")
+	}
+}
+
+func TestDaemonRestartKeepsSessionsSinceEnable(t *testing.T) {
+	store := newFakeStore(sessionStartEvent(), sessionStopEvent())
+	store.state = applyEvents(store.state, store.events)
+	store.state.Processes[childProcessKey()] = managedChild()
+	store.procs = []process.Process{childProcess()}
+	killer := &fakeKiller{}
+	runner := testRunner(store, killer)
+	runner.cfg.SessionSince = shellProcess().CreateTime - 1
+	requireNoError(t, runner.Tick(t.Context()))
+	if !killer.called {
+		t.Fatal("daemon restart forgot eligible session")
+	}
+}
+
+func TestFreshSessionUsesProcessClockWhenWallClockDiffers(t *testing.T) {
+	event := sessionStartEvent()
+	event.ObservedAt = time.UnixMilli(90)
+	store := newFakeStore(event)
+	store.procs = []process.Process{shellProcess(), childProcess()}
+	runner := testRunner(store, nil)
+	runner.cfg.SessionSince = 99
+	requireNoError(t, runner.Tick(t.Context()))
+	if len(store.state.Processes) != 1 {
+		t.Fatal("wall-clock skew discarded a fresh shell identity")
+	}
+}
+
+func requireNoError(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestTickTracksSessionDescendants(t *testing.T) {
 	store := newFakeStore(sessionStartEvent())

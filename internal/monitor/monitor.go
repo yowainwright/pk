@@ -91,6 +91,10 @@ func (m *Monitor) runLoop(ctx context.Context, ticks <-chan time.Time) error {
 }
 
 func (m *Monitor) check(ctx context.Context) {
+	if err := m.cfg.Reload(); err != nil {
+		m.logger.Error("Cannot load saved ignores; skipping cleanup", "error", err)
+		return
+	}
 	procs, err := m.lister.List(ctx)
 	if err != nil {
 		m.logger.Error("Failed to list processes", "error", err)
@@ -117,6 +121,7 @@ func (m *Monitor) handleProcesses(ctx context.Context, procs []process.Process) 
 
 func (m *Monitor) handleProcess(ctx context.Context, p process.Process, procs []process.Process) {
 	if m.cfg.IsProtected(p.Name) {
+		delete(m.offenses, p.PID)
 		return
 	}
 
