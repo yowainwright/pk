@@ -137,6 +137,10 @@ func (m *Manager) replaceService(ctx context.Context, previous []byte) error {
 		cause := m.rollbackServiceAfterShellInstall(err)
 		return m.restoreRegistration(previous, cause)
 	}
+	return m.installShell(previous)
+}
+
+func (m *Manager) installShell(previous []byte) error {
 	if err := m.shellInstaller().Install(); err != nil {
 		cause := m.rollbackServiceAfterShellInstall(err)
 		return m.restoreRegistration(previous, cause)
@@ -145,9 +149,13 @@ func (m *Manager) replaceService(ctx context.Context, previous []byte) error {
 }
 
 func (m *Manager) resume(ctx context.Context) error {
-	if err := m.shellInstaller().Install(); err != nil {
+	if err := m.resumeService(ctx); err != nil {
 		return err
 	}
+	return m.installShell(m.registration())
+}
+
+func (m *Manager) resumeService(ctx context.Context) error {
 	if m.goos == "darwin" {
 		if err := m.resumeLaunchd(ctx); err != nil {
 			return err
