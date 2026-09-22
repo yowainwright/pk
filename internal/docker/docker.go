@@ -1,13 +1,17 @@
 package docker
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/yowainwright/pk/internal/audit"
@@ -182,4 +186,236 @@ func isLocalEndpoint(host string) bool {
 	noCredentials := endpoint.User == nil
 	valid := localSocket && plainPath && noCredentials && filepath.IsAbs(endpoint.Path)
 	return valid
+}
+
+func (r execRunner) LookPath(name string) (string, error) {
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (r execRunner) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).Output()
+}
+
+func (r execRunner) Run(ctx context.Context, name string, args ...string) error {
+	return exec.CommandContext(ctx, name, args...).Run()
+}
+
+type containerRow struct {
+	ID      string
+	Image   string
+	Names   string
+	Command string
+	Labels  string
+}
+
+func parseContainers(output []byte) ([]Container, error) {
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	containers := make([]Container, 0)
+	for scanner.Scan() {
+		container, ok, err := parseContainerLine(scanner.Bytes())
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			containers = append(containers, container)
+		}
+	}
+	return containers, scanner.Err()
+}
+
+func parseContainerLine(line []byte) (Container, bool, error) {
+	if len(bytes.TrimSpace(line)) == 0 {
+		return Container{}, false, nil
+	}
+	var row containerRow
+	if err := json.Unmarshal(line, &row); err != nil {
+		return Container{}, false, err
+	}
+	return row.container(), true, nil
+}
+
+func (r containerRow) container() Container {
+	return Container{
+		ID:      r.ID,
+		Name:    r.Names,
+		Image:   r.Image,
+		Command: r.Command,
+		Labels:  parseLabels(r.Labels),
+	}
+}
+
+func parseLabels(value string) map[string]string {
+	labels := make(map[string]string)
+	for _, part := range strings.Split(value, ",") {
+		key, labelValue, ok := strings.Cut(strings.TrimSpace(part), "=")
+		hasLabel := ok && key != ""
+		if hasLabel {
+			labels[key] = labelValue
+		}
+	}
+	return labels
+}
+
+const (
+	ActionStop     = "stop"
+	ConfidenceHigh = "high"
+)
+
+func reportForContainer(container Container) (Report, bool) {
+	if protected(container) {
+		return Report{}, false
+	}
+	reasons := reasonsForContainer(container)
+	if len(reasons) == 0 {
+		return Report{}, false
+	}
+	return Report{
+		Container:  container,
+		Action:     ActionStop,
+		Confidence: ConfidenceHigh,
+		Reasons:    reasons,
+	}, true
+}
+
+func reasonsForContainer(container Container) []string {
+	reasons := make([]string, 0, 2)
+	if hasComposeLabels(container.Labels) {
+		reasons = append(reasons, "compose-container")
+	}
+	if hasDevContainerLabels(container.Labels) {
+		reasons = append(reasons, "devcontainer")
+	}
+	if hasLocalWorkdir(container.Labels) {
+		reasons = append(reasons, "local-workdir")
+	}
+	return reasons
+}
+
+func protected(container Container) bool {
+	return container.Labels["pk.protected"] == "true"
+}
+
+func hasComposeLabels(labels map[string]string) bool {
+	_, hasProject := labels["com.docker.compose.project"]
+	_, hasWorkingDir := labels["com.docker.compose.project.working_dir"]
+	return hasProject || hasWorkingDir
+}
+
+func hasDevContainerLabels(labels map[string]string) bool {
+	for key := range labels {
+		if strings.Contains(strings.ToLower(key), "devcontainer") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasLocalWorkdir(labels map[string]string) bool {
+	workdir := labels["com.docker.compose.project.working_dir"]
+	if workdir == "" {
+		workdir = labels["devcontainer.local_folder"]
+	}
+	return isLocalPath(workdir)
+}
+
+func isLocalPath(path string) bool {
+	return strings.HasPrefix(path, "/Users/") || strings.HasPrefix(path, "/home/")
+}
+
+func sortReports(reports []Report) {
+	sort.Slice(reports, func(i, j int) bool {
+		return reports[i].Container.ID < reports[j].Container.ID
+	})
+}
+
+func runReports(
+	ctx context.Context,
+	reports []Report,
+	client Client,
+	recorder Recorder,
+	apply bool,
+) ([]Result, error) {
+	results := make([]Result, 0, len(reports))
+	for _, report := range reports {
+		result := runReport(ctx, report, client, apply)
+		if err := recordResult(recorder, result); err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func runReport(ctx context.Context, report Report, client Client, apply bool) Result {
+	result := Result{Report: report, Applied: apply}
+	if !apply {
+		return result
+	}
+	if err := client.Stop(ctx, report.Container.ID); err != nil {
+		result.Error = err.Error()
+	}
+	return result
+}
+
+func recordResult(recorder Recorder, result Result) error {
+	if recorder == nil {
+		return nil
+	}
+	event := eventForResult(result)
+	if err := recorder.Record(event); err != nil {
+		return fmt.Errorf("recording docker cleanup event: %w", err)
+	}
+	return nil
+}
+
+func eventForResult(result Result) audit.Event {
+	container := result.Report.Container
+	return audit.Event{
+		Command:     "cleanup",
+		Action:      result.Report.Action,
+		TargetType:  "container",
+		Applied:     result.Applied,
+		Name:        container.Name,
+		ContainerID: container.ID,
+		Image:       container.Image,
+		CommandLine: container.Command,
+		Reasons:     result.Report.Reasons,
+		Error:       result.Error,
+	}
+}
+
+func WriteResults(w io.Writer, results []Result) error {
+	if len(results) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintln(w, "CONTAINER\tAPPLIED\tNAME\tIMAGE\tERROR\tREASONS"); err != nil {
+		return err
+	}
+	return writeRows(w, results)
+}
+
+func writeRows(w io.Writer, results []Result) error {
+	for _, result := range results {
+		if err := writeRow(w, result); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeRow(w io.Writer, result Result) error {
+	container := result.Report.Container
+	_, err := fmt.Fprintf(w, "%s\t%t\t%s\t%s\t%s\t%s\n",
+		container.ID,
+		result.Applied,
+		container.Name,
+		container.Image,
+		result.Error,
+		strings.Join(result.Report.Reasons, ","),
+	)
+	return err
 }

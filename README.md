@@ -102,7 +102,7 @@ scanner's high-confidence targets. To avoid containers being cleaned up, a label
 `pk.protected=true` can be set.
 
 See the [process](internal/cleanup/cleanup.go)
-and [container](internal/docker/reports.go) selection rules.
+and [container](internal/docker/docker.go) selection rules.
 
 ### `pk monitor`
 
