@@ -2,6 +2,7 @@ package dx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -29,7 +30,7 @@ func (u *UI) waitForTask(ctx context.Context, label string, result <-chan error)
 		statusErr := u.renderTaskCompletion(ctx, label, actionErr)
 		return firstError(actionErr, statusErr)
 	case <-ctx.Done():
-		return ctx.Err()
+		return errors.Join(ctx.Err(), <-result)
 	case <-timer.C():
 		return u.animateTask(ctx, label, result)
 	}
@@ -55,43 +56,18 @@ type runningTask struct {
 	frame  int
 }
 
-type taskEvent struct {
-	kind taskEventKind
-	err  error
-}
-
-type taskEventKind uint8
-
-const (
-	taskFinished taskEventKind = iota
-	taskCanceled
-	taskTicked
-)
-
 func (u *UI) runLoader(task runningTask) error {
 	for {
-		event := nextTaskEvent(task)
-		switch event.kind {
-		case taskFinished:
-			return u.finishTask(task, event.err)
-		case taskCanceled:
-			return u.cancelTask(task.ctx)
-		case taskTicked:
+		select {
+		case err := <-task.result:
+			return u.finishTask(task, err)
+		case <-task.ctx.Done():
+			return u.cancelTask(task)
+		case <-task.ticker.C():
 			if err := u.advanceLoader(&task); err != nil {
 				return err
 			}
 		}
-	}
-}
-
-func nextTaskEvent(task runningTask) taskEvent {
-	select {
-	case err := <-task.result:
-		return taskEvent{kind: taskFinished, err: err}
-	case <-task.ctx.Done():
-		return taskEvent{kind: taskCanceled}
-	case <-task.ticker.C():
-		return taskEvent{kind: taskTicked}
 	}
 }
 
@@ -101,9 +77,10 @@ func (u *UI) finishTask(task runningTask, actionErr error) error {
 	return firstError(actionErr, restoreErr, statusErr)
 }
 
-func (u *UI) cancelTask(ctx context.Context) error {
+func (u *UI) cancelTask(task runningTask) error {
 	restoreErr := u.restoreTerminal()
-	return firstError(ctx.Err(), restoreErr)
+	actionErr := <-task.result
+	return errors.Join(task.ctx.Err(), actionErr, restoreErr)
 }
 
 func (u *UI) advanceLoader(task *runningTask) error {
@@ -159,12 +136,8 @@ func (u *UI) waitAfterOutputError(
 	result <-chan error,
 	outputErr error,
 ) error {
-	select {
-	case actionErr := <-result:
-		return firstError(actionErr, outputErr)
-	case <-ctx.Done():
-		return firstError(ctx.Err(), outputErr)
-	}
+	actionErr := <-result
+	return errors.Join(actionErr, ctx.Err(), outputErr)
 }
 
 func loaderFrame(color bool, label string, frame int) string {

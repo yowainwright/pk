@@ -1,4 +1,4 @@
-package scan
+package cleanup
 
 import (
 	"context"
@@ -10,7 +10,6 @@ import (
 
 	"github.com/yowainwright/pk/internal/config"
 	"github.com/yowainwright/pk/internal/process"
-	"github.com/yowainwright/pk/internal/processtree"
 )
 
 type Action string
@@ -41,7 +40,7 @@ type Scanner struct {
 	lister process.Lister
 }
 
-func New(cfg *config.Config, lister process.Lister) *Scanner {
+func NewScanner(cfg *config.Config, lister process.Lister) *Scanner {
 	return &Scanner{cfg: cfg, lister: lister}
 }
 
@@ -55,8 +54,9 @@ func (s *Scanner) Scan(ctx context.Context) ([]Report, error) {
 
 func Reports(cfg *config.Config, procs []process.Process) []Report {
 	reports := make([]Report, 0, len(procs))
+	tree := process.NewIndex(procs)
 	for _, proc := range procs {
-		report, ok := reportForProcess(cfg, proc, procs)
+		report, ok := reportForProcess(cfg, proc, tree)
 		if ok {
 			reports = append(reports, report)
 		}
@@ -80,26 +80,26 @@ func WriteReports(w io.Writer, reports []Report) error {
 func reportForProcess(
 	cfg *config.Config,
 	proc process.Process,
-	procs []process.Process,
+	tree *process.Index,
 ) (Report, bool) {
-	reasons := reasonsForProcess(cfg, proc, procs)
+	reasons := reasonsForProcess(cfg, proc, tree)
 	if len(reasons) == 0 {
 		return Report{}, false
 	}
 
 	confidence := confidenceForReasons(reasons)
 	action := actionForConfidence(confidence)
-	descendants := reportDescendants(cfg, proc, procs)
+	descendants := unprotectedDescendants(cfg, proc, tree)
 	report := newReport(proc, descendants, action, confidence, reasons)
 	return report, true
 }
 
-func reportDescendants(
+func unprotectedDescendants(
 	cfg *config.Config,
 	proc process.Process,
-	procs []process.Process,
+	tree *process.Index,
 ) []process.Process {
-	descendants := processtree.Descendants(procs, proc.PID)
+	descendants := tree.Descendants(proc.PID)
 	filtered := make([]process.Process, 0, len(descendants))
 	for _, descendant := range descendants {
 		if !cfg.IsProtected(descendant.Name) {
@@ -191,13 +191,13 @@ func confidenceForReasons(reasons []string) Confidence {
 func reasonsForProcess(
 	cfg *config.Config,
 	proc process.Process,
-	procs []process.Process,
+	tree *process.Index,
 ) []string {
 	if cfg.IsProtected(proc.Name) {
 		return protectedReasons(cfg, proc)
 	}
 
-	reasons := cleanupReasons(cfg, proc, procs)
+	reasons := cleanupReasons(cfg, proc, tree)
 	if len(reasons) == 0 {
 		return nil
 	}
@@ -208,10 +208,10 @@ func reasonsForProcess(
 func cleanupReasons(
 	cfg *config.Config,
 	proc process.Process,
-	procs []process.Process,
+	tree *process.Index,
 ) []string {
 	reasons := commandReasons(proc)
-	reasons = append(reasons, ownershipReasons(proc, procs)...)
+	reasons = append(reasons, ownershipReasons(proc, tree)...)
 	reasons = append(reasons, locationReasons(proc)...)
 	reasons = append(reasons, thresholdReasons(cfg, proc)...)
 	if hasOnlyLocationReason(reasons) {
@@ -226,14 +226,14 @@ func cleanupReasons(
 	return reasons
 }
 
-func ownershipReasons(proc process.Process, procs []process.Process) []string {
-	if hasAncestor(proc, procs, isAgentProcess) {
+func ownershipReasons(proc process.Process, tree *process.Index) []string {
+	if hasAncestor(proc, tree, isAgentProcess) {
 		return []string{"agent-owned"}
 	}
 	if proc.Cwd == "" {
 		return nil
 	}
-	if hasAncestor(proc, procs, isSessionRoot) {
+	if hasAncestor(proc, tree, isSessionRoot) {
 		return []string{"session-owned"}
 	}
 	return nil
@@ -311,19 +311,19 @@ func isSessionRoot(proc process.Process) bool {
 
 func hasAncestor(
 	proc process.Process,
-	procs []process.Process,
+	tree *process.Index,
 	matches func(process.Process) bool,
 ) bool {
 	walker := ancestorWalker{
-		byPID: processesByPID(procs),
-		seen:  map[int32]bool{proc.PID: true},
+		tree: tree,
+		seen: map[int32]bool{proc.PID: true},
 	}
 	return walker.hasMatch(proc.ParentPID, matches)
 }
 
 type ancestorWalker struct {
-	byPID map[int32]process.Process
-	seen  map[int32]bool
+	tree *process.Index
+	seen map[int32]bool
 }
 
 func (w *ancestorWalker) hasMatch(
@@ -344,21 +344,13 @@ func (w *ancestorWalker) hasMatch(
 }
 
 func (w *ancestorWalker) next(pid int32) (process.Process, bool) {
-	ancestor, ok := w.byPID[pid]
+	ancestor, ok := w.tree.Process(pid)
 	shouldStop := !ok || w.seen[pid]
 	if shouldStop {
 		return process.Process{}, false
 	}
 	w.seen[pid] = true
 	return ancestor, true
-}
-
-func processesByPID(procs []process.Process) map[int32]process.Process {
-	byPID := make(map[int32]process.Process, len(procs))
-	for _, proc := range procs {
-		byPID[proc.PID] = proc
-	}
-	return byPID
 }
 
 func matchesAnyCommand(name string, command string, commands []string) bool {

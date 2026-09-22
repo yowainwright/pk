@@ -1,12 +1,12 @@
-package shell
+package service
 
 import (
 	_ "embed"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -20,13 +20,13 @@ const (
 //go:embed pk.zsh
 var zshPlugin string
 
-type Installer struct {
+type ShellInstaller struct {
 	Home       string
 	ZDOTDIR    string
 	Executable string
 }
 
-func (i Installer) Install() error {
+func (i ShellInstaller) Install() error {
 	if err := i.validate(); err != nil {
 		return err
 	}
@@ -43,30 +43,30 @@ func (i Installer) Install() error {
 	return nil
 }
 
-func (i Installer) Uninstall() error {
+func (i ShellInstaller) Uninstall() error {
 	if err := removeSourceLine(i.ZshrcPath(), i.SourceLine()); err != nil {
 		return err
 	}
 	return removePlugin(i.PluginPath())
 }
 
-func (i Installer) PluginPath() string {
+func (i ShellInstaller) PluginPath() string {
 	return filepath.Join(i.Home, ".config", "pk", "shell", "pk.zsh")
 }
 
-func (i Installer) ZshrcPath() string {
+func (i ShellInstaller) ZshrcPath() string {
 	if i.ZDOTDIR != "" {
 		return filepath.Join(i.ZDOTDIR, ".zshrc")
 	}
 	return filepath.Join(i.Home, ".zshrc")
 }
 
-func (i Installer) SourceLine() string {
+func (i ShellInstaller) SourceLine() string {
 	path := "$HOME/.config/pk/shell/pk.zsh"
 	return fmt.Sprintf(`[ -r "%s" ] && source "%s" %s`, path, path, sourceMarker)
 }
 
-func (i Installer) validate() error {
+func (i ShellInstaller) validate() error {
 	if i.Home == "" {
 		return fmt.Errorf("home is required")
 	}
@@ -80,11 +80,17 @@ func writePlugin(path string, executable string) error {
 	if err := os.MkdirAll(filepath.Dir(path), shellDirMode); err != nil {
 		return fmt.Errorf("creating shell plugin dir: %w", err)
 	}
-	content := strings.ReplaceAll(zshPlugin, executablePlaceholder, executable)
+	content := strings.ReplaceAll(zshPlugin, executablePlaceholder, quoteShellLiteral(executable))
 	if err := os.WriteFile(path, []byte(content), pluginMode); err != nil {
 		return fmt.Errorf("writing shell plugin: %w", err)
 	}
 	return os.Chmod(path, pluginMode)
+}
+
+func quoteShellLiteral(value string) string {
+	escaped := strings.ReplaceAll(value, "'", "'\"'\"'")
+	quoted := "'" + escaped + "'"
+	return quoted
 }
 
 func appendSourceLine(path string, line string) error {
@@ -103,66 +109,29 @@ func appendSourceLine(path string, line string) error {
 }
 
 func readOptional(path string) (string, error) {
-	rootDir, name := splitRootPath(path)
-	root, err := os.OpenRoot(rootDir)
+	// #nosec G304 -- User-selected shell rc; external dotfile symlinks are supported.
+	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return "", nil
 	}
-	if err != nil {
-		return "", fmt.Errorf("opening shell rc dir: %w", err)
-	}
-	defer func() {
-		_ = root.Close()
-	}()
-	return readRootText(root, name)
-}
-
-func readRootText(root *os.Root, name string) (string, error) {
-	file, err := root.Open(name)
-	if os.IsNotExist(err) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("reading shell rc: %w", err)
-	}
-	defer func() {
-		_ = file.Close()
-	}()
-	data, err := io.ReadAll(file)
 	if err != nil {
 		return "", fmt.Errorf("reading shell rc: %w", err)
 	}
 	return string(data), nil
 }
 
-func splitRootPath(path string) (string, string) {
-	dir, name := filepath.Split(path)
-	if dir == "" {
-		return ".", name
-	}
-	return filepath.Clean(dir), name
-}
-
 func sourceLineExists(contents string, line string) bool {
-	for _, current := range strings.Split(contents, "\n") {
-		if current == line {
-			return true
-		}
-	}
-	return false
+	lines := strings.Split(contents, "\n")
+	return slices.Contains(lines, line)
 }
 
 func appendLine(contents string, line string) string {
-	var builder strings.Builder
-	if contents != "" {
-		builder.WriteString(contents)
-		if !strings.HasSuffix(contents, "\n") {
-			builder.WriteByte('\n')
-		}
+	needsNewline := contents != "" && !strings.HasSuffix(contents, "\n")
+	if needsNewline {
+		contents += "\n"
 	}
-	builder.WriteString(line)
-	builder.WriteByte('\n')
-	return builder.String()
+	next := contents + line + "\n"
+	return next
 }
 
 func removeSourceLine(path string, line string) error {
@@ -178,8 +147,7 @@ func removeSourceLine(path string, line string) error {
 }
 
 func writeShellRC(path string, data []byte) error {
-	mode := shellRCMode(path)
-	return os.WriteFile(path, data, mode)
+	return os.WriteFile(path, data, shellRCMode(path))
 }
 
 func shellRCMode(path string) os.FileMode {

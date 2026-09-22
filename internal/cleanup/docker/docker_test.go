@@ -296,6 +296,8 @@ func (r *fakeRecorder) Record(event audit.Event) error {
 type fakeRunner struct {
 	available bool
 	output    []byte
+	endpoint  string
+	commands  [][]string
 	err       error
 }
 
@@ -307,10 +309,20 @@ func (r *fakeRunner) LookPath(name string) (string, error) {
 }
 
 func (r *fakeRunner) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
+	r.commands = append(r.commands, append([]string{name}, args...))
+	inspecting := len(args) > 0 && args[0] == "context"
+	if inspecting {
+		endpoint := r.endpoint
+		if endpoint == "" {
+			endpoint = `"unix:///var/run/docker.sock"`
+		}
+		return []byte(endpoint), r.err
+	}
 	return r.output, r.err
 }
 
 func (r *fakeRunner) Run(ctx context.Context, name string, args ...string) error {
+	r.commands = append(r.commands, append([]string{name}, args...))
 	return r.err
 }
 
@@ -361,5 +373,43 @@ func assertContainerEvent(t *testing.T, event audit.Event) {
 	}
 	if event.ContainerID != "abc123" {
 		t.Fatalf("expected container id, got %q", event.ContainerID)
+	}
+}
+
+func TestCLIClientRejectsRemoteEndpointsBeforeCleanup(t *testing.T) {
+	for _, host := range []string{`"ssh://server"`, `"tcp://server:2375"`, `""`, `null`, `not-json`} {
+		t.Run(host, func(t *testing.T) {
+			runner := &fakeRunner{available: true, endpoint: host, output: dockerOutput()}
+			apply := true
+			_, err := Run(t.Context(), NewClientWithRunner(runner), nil, apply)
+			rejected := err != nil && len(runner.commands) == 1
+			if !rejected {
+				t.Fatalf(
+					"must reject endpoint before listing or stopping: %v, %v",
+					err,
+					runner.commands,
+				)
+			}
+		})
+	}
+}
+
+func TestCLIClientPinsEndpointAcrossListAndStop(t *testing.T) {
+	runner := &fakeRunner{output: dockerOutput(), endpoint: `"unix:///local/docker.sock"`}
+	client := NewClientWithRunner(runner)
+	if _, err := client.List(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	runner.endpoint = `"ssh://different-server"`
+	if err := client.Stop(t.Context(), "abc123"); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range runner.commands[1:] {
+		if strings.Join(args[:3], " ") != "docker --host unix:///local/docker.sock" {
+			t.Fatalf("endpoint changed: %v", args)
+		}
+	}
+	if len(runner.commands) != 3 {
+		t.Fatalf("endpoint was resolved again: %v", runner.commands)
 	}
 }

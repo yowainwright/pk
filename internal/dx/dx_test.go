@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/yowainwright/pk/internal/dx"
 )
@@ -194,5 +195,19 @@ func environment(values map[string]string) func(string) (string, bool) {
 	return func(name string) (string, bool) {
 		value, ok := values[name]
 		return value, ok
+	}
+}
+
+func TestDefaultTiming(t *testing.T) {
+	timing := dx.DefaultTiming()
+
+	if timing.LoaderDelay != 200*time.Millisecond {
+		t.Fatalf("unexpected loader delay %s", timing.LoaderDelay)
+	}
+	if timing.FrameInterval != 80*time.Millisecond {
+		t.Fatalf("unexpected frame interval %s", timing.FrameInterval)
+	}
+	if timing.ShineDuration != 240*time.Millisecond {
+		t.Fatalf("unexpected shine duration %s", timing.ShineDuration)
 	}
 }

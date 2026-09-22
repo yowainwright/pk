@@ -5,20 +5,17 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
+	"github.com/shirou/gopsutil/v4/cpu"
 	gopsutilProcess "github.com/shirou/gopsutil/v4/process"
 )
 
-func TestNewProcessMapsMetadata(t *testing.T) {
-	data := metadata{
-		parentPID:   7,
-		commandLine: "node server.js",
-		cwd:         "/Users/jeff/code/app",
-		cpuPercent:  42,
+func TestGetProcessInfoMapsMetadata(t *testing.T) {
+	proc, err := getProcessInfo(t.Context(), 9, testSystemProcess())
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	proc := newProcess(9, 123, "node", 128, data)
-
 	assertProcessIdentity(t, proc)
 	assertProcessMetadata(t, proc)
 }
@@ -176,8 +173,8 @@ func (p *fakeSystemProcess) CwdWithContext(ctx context.Context) (string, error) 
 	return p.cwd, p.cwdErr
 }
 
-func (p *fakeSystemProcess) CPUPercentWithContext(ctx context.Context) (float64, error) {
-	return p.cpu, p.cpuErr
+func (p *fakeSystemProcess) TimesWithContext(ctx context.Context) (*cpu.TimesStat, error) {
+	return &cpu.TimesStat{User: p.cpu}, p.cpuErr
 }
 
 func testSystemProcess() *fakeSystemProcess {
@@ -215,9 +212,6 @@ func assertProcessMetadata(t *testing.T, proc Process) {
 	}
 	if proc.Cwd != "/Users/jeff/code/app" {
 		t.Fatalf("expected cwd, got %q", proc.Cwd)
-	}
-	if proc.CPUPercent != 42 {
-		t.Fatalf("expected cpu percent, got %f", proc.CPUPercent)
 	}
 	if proc.MemoryMB != 128 {
 		t.Fatalf("expected memory mb, got %d", proc.MemoryMB)
@@ -258,5 +252,70 @@ func replaceListProcesses(
 	}
 	return func() {
 		listProcesses = oldListProcesses
+	}
+}
+
+type cpuTestSample struct {
+	created int64
+	total   float64
+	percent float64
+}
+
+func TestCPUTracksRecentUsageAndResetsForReusedPID(t *testing.T) {
+	samples := []cpuTestSample{
+		{123, 1, 0}, // First sample establishes a baseline.
+		{123, 2, 100},
+		{123, 2, 0},     // An idle interval must not report lifetime usage.
+		{456, 900, 0},   // A reused PID establishes a new baseline.
+		{456, 902, 200}, // Multiple cores can exceed 100%.
+	}
+	assertCPUSamples(t, samples)
+}
+
+func assertCPUSamples(t *testing.T, samples []cpuTestSample) {
+	t.Helper()
+	lister := NewLister()
+	now := time.Unix(1000, 0)
+	lister.now = func() time.Time { return now }
+	for index, sample := range samples {
+		proc := Process{PID: 42, CreateTime: sample.created}
+		system := testSystemProcess()
+		system.cpu = sample.total
+		if got := sampleTestCPU(lister, proc, system); got != sample.percent {
+			t.Fatalf("sample %d: got %v, want %v", index, got, sample.percent)
+		}
+		now = now.Add(time.Second)
+	}
+}
+
+func TestFailedCPUSampleRequiresFreshBaseline(t *testing.T) {
+	lister := NewLister()
+	proc := Process{PID: 42, CreateTime: 123}
+	system := testSystemProcess()
+	sampleTestCPU(lister, proc, system)
+	system.cpuErr = errors.New("denied")
+	if got := sampleTestCPU(lister, proc, system); got != 0 {
+		t.Fatalf("failed read: %v", got)
+	}
+	system.cpuErr = nil
+	system.cpu += 100
+	if got := sampleTestCPU(lister, proc, system); got != 0 {
+		t.Fatalf("stale baseline: %v", got)
+	}
+}
+
+func sampleTestCPU(lister *GopsutilLister, proc Process, system systemProcess) float64 {
+	next := make(map[int32]cpuSample)
+	percent := lister.sampleCPU(context.Background(), proc, system, next)
+	lister.samples = next
+	return percent
+}
+
+func TestSnapshotPrunesExitedProcesses(t *testing.T) {
+	lister := NewLister()
+	lister.samples = map[int32]cpuSample{42: {createTime: 123, at: time.Now()}}
+	lister.snapshot(t.Context(), nil)
+	if len(lister.samples) != 0 {
+		t.Fatal("retained exited process sample")
 	}
 }

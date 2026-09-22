@@ -1,4 +1,4 @@
-package notify
+package dx
 
 import "testing"
 
@@ -22,7 +22,7 @@ func TestSendRunsOsaScriptCommand(t *testing.T) {
 		return nil
 	}
 
-	if err := Send("pk", "done"); err != nil {
+	if err := Notify("pk", "done"); err != nil {
 		t.Fatalf("send notification: %v", err)
 	}
 	assertNotificationCommand(t, commandName, commandArgs)

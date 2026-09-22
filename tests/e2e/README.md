@@ -32,7 +32,7 @@ arguments, starts/stops the real daemon, and gives it a different
 Actual OS login/reboot and a real Homebrew package upgrade remain outside this
 suite. The binary-upgrade test swaps two compiled versions through a symlink;
 it does not run Homebrew. Interactive zsh hook behavior is covered by the
-[shell integration tests](../../internal/shell/shell_test.go).
+[shell integration tests](../../internal/service/shell_test.go).
 
 Run either layer independently:
 

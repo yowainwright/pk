@@ -1,4 +1,4 @@
-package diagnostics
+package dx
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-type Input struct {
+type DoctorInput struct {
 	Version         string
 	ServiceStatus   string
 	ServiceErr      error
@@ -17,7 +17,7 @@ type Input struct {
 	AuditOverride   bool
 }
 
-type Report struct {
+type DoctorReport struct {
 	Version       string
 	Platform      string
 	GoVersion     string
@@ -27,9 +27,9 @@ type Report struct {
 	AuditOverride string
 }
 
-func New(input Input) Report {
+func NewDoctorReport(input DoctorInput) DoctorReport {
 	platform := runtime.GOOS + "/" + runtime.GOARCH
-	return Report{
+	return DoctorReport{
 		Version:       input.Version,
 		Platform:      platform,
 		GoVersion:     runtime.Version(),
@@ -40,13 +40,13 @@ func New(input Input) Report {
 	}
 }
 
-func Write(w io.Writer, report Report) error {
+func WriteDoctorReport(w io.Writer, report DoctorReport) error {
 	lines := reportLines(report)
 	_, err := fmt.Fprintln(w, strings.Join(lines, "\n"))
 	return err
 }
 
-func reportLines(report Report) []string {
+func reportLines(report DoctorReport) []string {
 	version := "version: " + report.Version
 	platform := "platform: " + report.Platform
 	goVersion := "go: " + report.GoVersion

@@ -3,8 +3,11 @@ package audit
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -276,5 +279,70 @@ func assertNoAuditTempFiles(t *testing.T, dir string) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("expected no audit temp files, got %v", matches)
+	}
+}
+
+func TestRecordRoundTripsLargeCommandLines(t *testing.T) {
+	log := New(filepath.Join(t.TempDir(), "events.jsonl"))
+	command := strings.Repeat("x", 128*1024)
+	recordTestEvent(t, log, Event{Name: "large", CommandLine: command})
+	recordTestEvent(t, log, Event{Name: "next"})
+	events := readTestEvents(t, log)
+	roundTripped := len(events) == 2 && events[0].CommandLine == command
+	if !roundTripped {
+		t.Fatal("large record broke subsequent reads or writes")
+	}
+}
+
+func TestRecordConcurrentProcessesKeepEveryEvent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	commands := make([]*exec.Cmd, 0, 4)
+	for worker := range 4 {
+		command := startAuditWriter(t, path, worker)
+		commands = append(commands, command)
+	}
+	for _, command := range commands {
+		if err := command.Wait(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if events := readTestEvents(t, New(path)); len(events) != 40 {
+		t.Fatalf("lost concurrent events: got %d, want 40", len(events))
+	}
+}
+
+func startAuditWriter(t *testing.T, path string, worker int) *exec.Cmd {
+	t.Helper()
+	command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestAuditWriterProcess$")
+	workerEnv := fmt.Sprintf("PK_AUDIT_WORKER=%d", worker)
+	command.Env = append(os.Environ(), "PK_AUDIT_TEST_PATH="+path, workerEnv)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	return command
+}
+
+func TestAuditWriterProcess(t *testing.T) {
+	path := os.Getenv("PK_AUDIT_TEST_PATH")
+	if path == "" {
+		t.Skip("subprocess helper")
+	}
+	log := New(path)
+	for index := range 10 {
+		name := fmt.Sprintf("%s-%d", os.Getenv("PK_AUDIT_WORKER"), index)
+		recordTestEvent(t, log, Event{Name: name})
+	}
+}
+
+func TestRecordRejectsSymlinkedLock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.jsonl")
+	target := filepath.Join(dir, "other")
+	writeTestFile(t, target, []byte("unchanged"))
+	if err := os.Symlink(target, path+".lock"); err != nil {
+		t.Fatal(err)
+	}
+	if err := New(path).Record(Event{Name: "node"}); err == nil {
+		t.Fatal("accepted symlinked audit lock")
 	}
 }

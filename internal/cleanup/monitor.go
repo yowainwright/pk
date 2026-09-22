@@ -1,4 +1,4 @@
-package monitor
+package cleanup
 
 import (
 	"context"
@@ -7,9 +7,7 @@ import (
 	"time"
 
 	"github.com/yowainwright/pk/internal/config"
-	"github.com/yowainwright/pk/internal/killer"
 	"github.com/yowainwright/pk/internal/process"
-	"github.com/yowainwright/pk/internal/processtree"
 )
 
 type offense struct {
@@ -17,7 +15,7 @@ type offense struct {
 	proc      process.Process
 }
 
-type Options struct {
+type MonitorOptions struct {
 	Apply  bool
 	Logger *slog.Logger
 }
@@ -25,7 +23,7 @@ type Options struct {
 type Monitor struct {
 	cfg    *config.Config
 	lister process.Lister
-	killer killer.Killer
+	killer process.Killer
 	notify func(name string, pid int32) error
 	apply  bool
 	logger *slog.Logger
@@ -34,12 +32,12 @@ type Monitor struct {
 	offenses map[int32]*offense
 }
 
-func New(
+func NewMonitor(
 	cfg *config.Config,
 	lister process.Lister,
-	k killer.Killer,
+	k process.Killer,
 	notify func(string, int32) error,
-	options Options,
+	options MonitorOptions,
 ) *Monitor {
 	return &Monitor{
 		cfg:      cfg,
@@ -110,16 +108,17 @@ func (m *Monitor) check(ctx context.Context) {
 
 func (m *Monitor) handleProcesses(ctx context.Context, procs []process.Process) map[int32]bool {
 	seen := make(map[int32]bool)
+	tree := process.NewIndex(procs)
 
 	for _, p := range procs {
 		seen[p.PID] = true
-		m.handleProcess(ctx, p, procs)
+		m.handleProcess(ctx, p, tree)
 	}
 
 	return seen
 }
 
-func (m *Monitor) handleProcess(ctx context.Context, p process.Process, procs []process.Process) {
+func (m *Monitor) handleProcess(ctx context.Context, p process.Process, tree *process.Index) {
 	if m.cfg.IsProtected(p.Name) {
 		delete(m.offenses, p.PID)
 		return
@@ -134,22 +133,8 @@ func (m *Monitor) handleProcess(ctx context.Context, p process.Process, procs []
 		return
 	}
 
-	descendants := m.killDescendants(procs, p.PID)
+	descendants := unprotectedDescendants(m.cfg, p, tree)
 	m.killExpiredOffense(ctx, p, descendants)
-}
-
-func (m *Monitor) killDescendants(
-	procs []process.Process,
-	pid int32,
-) []process.Process {
-	descendants := processtree.Descendants(procs, pid)
-	filtered := make([]process.Process, 0, len(descendants))
-	for _, descendant := range descendants {
-		if !m.cfg.IsProtected(descendant.Name) {
-			filtered = append(filtered, descendant)
-		}
-	}
-	return filtered
 }
 
 func (m *Monitor) recordNewOffense(p process.Process) bool {
@@ -248,7 +233,7 @@ func (m *Monitor) killTree(
 ) (bool, error) {
 	var firstErr error
 	rootKilled := false
-	for _, proc := range processtree.KillOrder(p, descendants) {
+	for _, proc := range process.KillOrder(p, descendants) {
 		if err := m.killer.Kill(ctx, proc); err != nil {
 			if firstErr == nil {
 				firstErr = err

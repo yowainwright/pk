@@ -8,8 +8,6 @@ import (
 
 	"github.com/yowainwright/pk/internal/audit"
 	"github.com/yowainwright/pk/internal/process"
-	"github.com/yowainwright/pk/internal/processtree"
-	"github.com/yowainwright/pk/internal/scan"
 )
 
 type Killer interface {
@@ -21,7 +19,7 @@ type Recorder interface {
 }
 
 type Result struct {
-	Report  scan.Report
+	Report  Report
 	Process process.Process
 	Applied bool
 	Error   string
@@ -29,7 +27,7 @@ type Result struct {
 
 func Run(
 	ctx context.Context,
-	reports []scan.Report,
+	reports []Report,
 	killer Killer,
 	recorder Recorder,
 	apply bool,
@@ -46,8 +44,8 @@ func Run(
 	return results, nil
 }
 
-func Targets(reports []scan.Report) []scan.Report {
-	targets := make([]scan.Report, 0, len(reports))
+func Targets(reports []Report) []Report {
+	targets := make([]Report, 0, len(reports))
 	for _, report := range reports {
 		if isTarget(report) {
 			targets = append(targets, report)
@@ -68,20 +66,20 @@ func WriteResults(w io.Writer, results []Result) error {
 	return writeRows(w, results)
 }
 
-func isTarget(report scan.Report) bool {
-	hasKillAction := report.Action == scan.ActionKill
-	hasHighConfidence := report.Confidence == scan.ConfidenceHigh
+func isTarget(report Report) bool {
+	hasKillAction := report.Action == ActionKill
+	hasHighConfidence := report.Confidence == ConfidenceHigh
 	return hasKillAction && hasHighConfidence
 }
 
 func runOne(
 	ctx context.Context,
-	report scan.Report,
+	report Report,
 	killer Killer,
 	recorder Recorder,
 	apply bool,
 ) ([]Result, error) {
-	procs := processtree.KillOrder(report.Process, report.Descendants)
+	procs := process.KillOrder(report.Process, report.Descendants)
 	results := make([]Result, 0, len(procs))
 	for _, proc := range procs {
 		result := runProcess(ctx, report, proc, killer, apply)
@@ -95,7 +93,7 @@ func runOne(
 
 func runProcess(
 	ctx context.Context,
-	report scan.Report,
+	report Report,
 	proc process.Process,
 	killer Killer,
 	apply bool,

@@ -79,8 +79,9 @@ func TestTaskRestoresCursorWhenCanceled(t *testing.T) {
 	delay.timer.fire()
 	clock.nextTicker(t)
 	cancel()
-	err := waitForTask(t, finished)
+	assertTaskWaiting(t, finished)
 	close(release)
+	err := waitForTask(t, finished)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected canceled task, got %v", err)
 	}
@@ -315,4 +316,54 @@ func (t *manualTicker) Stop() {}
 
 func (t *manualTicker) fire() {
 	t.ticks <- time.Now()
+}
+
+func assertTaskWaiting(t *testing.T, finished <-chan error) {
+	t.Helper()
+	select {
+	case err := <-finished:
+		t.Fatalf("task returned before action finished: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func TestTaskCancellationBeforeLoaderWaitsForRollback(t *testing.T) {
+	_, clock, ui := delayedTaskUI()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	release := make(chan struct{})
+	finished := startCancelableTask(ctx, ui, release)
+	clock.nextTimer(t)
+	cancel()
+	assertTaskWaiting(t, finished)
+	close(release)
+	if err := waitForTask(t, finished); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancellation after rollback, got %v", err)
+	}
+}
+
+func TestTaskCancellationAfterOutputErrorWaitsForAction(t *testing.T) {
+	expected := errors.New("write failed")
+	output := newFailFirstWriter(expected)
+	clock := newManualClock()
+	ui := failingTaskUI(output, clock)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	release := make(chan struct{})
+	finished := startCancelableTask(ctx, ui, release)
+	clock.nextTimer(t).timer.fire()
+	waitForFirstWrite(t, output)
+	cancel()
+	assertTaskWaiting(t, finished)
+	close(release)
+	assertTaskErrors(t, waitForTask(t, finished), context.Canceled, expected)
+}
+
+func assertTaskErrors(t *testing.T, err error, expected ...error) {
+	t.Helper()
+	for _, cause := range expected {
+		if !errors.Is(err, cause) {
+			t.Fatalf("expected %v, got %v", cause, err)
+		}
+	}
 }

@@ -1,4 +1,4 @@
-package scan
+package cleanup
 
 import (
 	"bytes"
@@ -114,8 +114,8 @@ func TestReportsSkipsRestartableCommandsOutsideDevCwd(t *testing.T) {
 func TestScannerReturnsReportsFromLister(t *testing.T) {
 	cfg := testConfig(t)
 	proc := restartableDevProcess(42)
-	lister := &fakeScanLister{procs: processes(proc)}
-	scanner := New(cfg, lister)
+	lister := &fakeLister{procs: processes(proc)}
+	scanner := NewScanner(cfg, lister)
 
 	reports, err := scanner.Scan(context.Background())
 	if err != nil {
@@ -128,8 +128,8 @@ func TestScannerReturnsReportsFromLister(t *testing.T) {
 
 func TestScannerReturnsListerErrors(t *testing.T) {
 	cfg := testConfig(t)
-	lister := &fakeScanLister{err: errors.New("denied")}
-	scanner := New(cfg, lister)
+	lister := &fakeLister{err: errors.New("denied")}
+	scanner := NewScanner(cfg, lister)
 
 	_, err := scanner.Scan(context.Background())
 
@@ -286,15 +286,6 @@ func TestWriteReportsUsesTabularOutput(t *testing.T) {
 	}
 }
 
-type fakeScanLister struct {
-	procs []process.Process
-	err   error
-}
-
-func (l *fakeScanLister) List(ctx context.Context) ([]process.Process, error) {
-	return l.procs, l.err
-}
-
 func restartableDevProcess(pid int32) process.Process {
 	proc := newProcess(pid, "node")
 	proc.CommandLine = "node ./node_modules/.bin/vite"
@@ -338,12 +329,6 @@ func onlyReportFromProcesses(
 		t.Fatalf("expected one report, got %d", len(reports))
 	}
 	return reports[0]
-}
-
-func processes(proc process.Process) []process.Process {
-	procs := make([]process.Process, 0, 1)
-	procs = append(procs, proc)
-	return procs
 }
 
 func newProcess(pid int32, name string) process.Process {
