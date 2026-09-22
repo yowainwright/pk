@@ -194,7 +194,7 @@ pk help cleanup
 
 ### `pk enable`
 
-`pk enable` starts background cleanup now and at login.
+`pk enable` starts pk.
 
 ```sh
 pk enable
@@ -204,15 +204,17 @@ After running, open a fresh zsh tab.
 
 ### `pk disable`
 
-`pk disable` stops background cleanup and removes automatic startup and the shell hook. The executable, saved ignores, and history remain.
+`pk disable` stops pk. 
+The executable, saved ignores, and history remain.
 
 ```sh
 pk disable
 ```
 
-### `pk ignore`
+### `pk ignore [...svc]`
 
-`pk ignore` saves process names to protect from cleanup. Names must match exactly, including case. `--list` shows saved names.
+`pk ignore` saves process names to protect from cleanup. 
+Names must match exactly, including case. `--list` shows saved names.
 
 ```sh
 pk ignore postgres redis-server
@@ -221,7 +223,8 @@ pk ignore --list
 
 ### `pk unignore`
 
-`pk unignore` removes saved process-name ignores. Built-in protections remain.
+`pk unignore` removes saved process-name ignores. 
+Built-in protections remain.
 
 ```sh
 pk unignore postgres
