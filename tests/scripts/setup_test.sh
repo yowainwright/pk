@@ -251,7 +251,7 @@ test_setup_uses_local_settings_for_claude_symlink() {
 test_setup_requires_go_legibility_config() {
   repository="$(new_test_repository)"
   create_test_repository "$repository"
-  printf 'version: v2.12.2\n' > "$repository/.custom-gcl.yml"
+  printf 'version: v2.14.0\n' > "$repository/.custom-gcl.yml"
 
   assert_setup_fails "$repository"
 }

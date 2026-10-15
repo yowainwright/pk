@@ -27,7 +27,7 @@ jobs:
         with:
           config: .codependencerc
           targets: go docker github-actions
-          version: "1.26.5"
+          version: "1.27.2"
           noCache: "true"
           pull-request: "true"
           token: ${{ secrets.PR_CREATE_TOKEN }}

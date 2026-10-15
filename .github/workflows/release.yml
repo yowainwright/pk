@@ -55,9 +55,9 @@ jobs:
           ref: ${{ inputs.tag_name }}
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@v7.0.0 # Immutable release; SHA archive returns 404.
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.2"
           cache: true
 
       - name: Install shell tools
@@ -123,9 +123,9 @@ jobs:
           ref: ${{ inputs.tag_name }}
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        uses: actions/setup-go@v7.0.0 # Immutable release; SHA archive returns 404.
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.2"
           cache: true
 
       - name: Install cosign
