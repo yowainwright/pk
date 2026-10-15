@@ -74,12 +74,6 @@ type globalOptions struct {
 	color dx.ColorMode
 }
 
-type colorArgument struct {
-	value    string
-	consumed int
-	found    bool
-}
-
 type application struct {
 	ctx  context.Context
 	ui   *dx.UI
@@ -631,7 +625,6 @@ func readObsInput(store lifecycleStore, serviceStatus string) (obsInput, error) 
 	if err != nil {
 		return obsInput{}, operationError("reading lifecycle events", err)
 	}
-	state.Ensure()
 	return obsInput{state: state, serviceStatus: serviceStatus, eventCount: len(events)}, nil
 }
 
@@ -951,35 +944,20 @@ func (a application) runSession(args []string) error {
 }
 
 func parseSessionEvent(args []string, output io.Writer) (lifecycle.Event, error) {
-	event, exitCode, err := parseSessionFlags(args, output)
+	event, err := newSessionEvent()
 	if err != nil {
 		return lifecycle.Event{}, err
 	}
-	if exitCode.set {
-		event.ExitCode = &exitCode.value
-	}
-	return event, nil
-}
-
-func parseSessionFlags(
-	args []string,
-	output io.Writer,
-) (lifecycle.Event, exitCodeArg, error) {
-	event, err := newSessionEvent()
-	if err != nil {
-		return lifecycle.Event{}, exitCodeArg{}, err
-	}
 	var pids sessionPIDs
-	var exitCode exitCodeArg
 	flags := sessionFlagSet(output)
-	registerSessionFlags(flags, &event, &pids, &exitCode)
+	registerSessionFlags(flags, &event, &pids)
 	if err := parseCommandFlags(flags, args); err != nil {
-		return lifecycle.Event{}, exitCodeArg{}, err
+		return lifecycle.Event{}, err
 	}
 	if err := applySessionPIDs(&event, pids); err != nil {
-		return lifecycle.Event{}, exitCodeArg{}, err
+		return lifecycle.Event{}, err
 	}
-	return event, exitCode, nil
+	return event, nil
 }
 
 func parseCommandFlags(flags *flag.FlagSet, args []string) error {
@@ -1015,11 +993,10 @@ func registerSessionFlags(
 	flags *flag.FlagSet,
 	event *lifecycle.Event,
 	pids *sessionPIDs,
-	exitCode *exitCodeArg,
 ) {
 	registerSessionIdentityFlags(flags, event)
 	registerSessionProcessFlags(flags, event, pids)
-	registerExitCodeFlag(flags, exitCode)
+	registerExitCodeFlag(flags, event)
 }
 
 func registerSessionIdentityFlags(flags *flag.FlagSet, event *lifecycle.Event) {
@@ -1047,14 +1024,13 @@ func registerSessionProcessFlags(
 	flags.StringVar(&event.CommandHash, "command-hash", "", "Command hash")
 }
 
-func registerExitCodeFlag(flags *flag.FlagSet, exitCode *exitCodeArg) {
+func registerExitCodeFlag(flags *flag.FlagSet, event *lifecycle.Event) {
 	flags.Func("exit-code", "Exit code", func(value string) error {
 		parsed, err := strconv.Atoi(value)
 		if err != nil {
 			return err
 		}
-		exitCode.value = parsed
-		exitCode.set = true
+		event.ExitCode = &parsed
 		return nil
 	})
 }
@@ -1107,64 +1083,47 @@ type sessionPIDs struct {
 	processPID int64
 }
 
-type exitCodeArg struct {
-	value int
-	set   bool
-}
-
 func parseGlobalOptions(args []string) ([]string, globalOptions, error) {
 	options := globalOptions{color: dx.ColorAuto}
 	commandArgs := make([]string, 0, len(args))
-	return collectGlobalOptions(args, commandArgs, options)
+	for len(args) > 0 {
+		if args[0] == "--" {
+			return append(commandArgs, args...), options, nil
+		}
+		consumed, err := parseColorOption(args, &options)
+		if err != nil {
+			return nil, options, err
+		}
+		if consumed == 0 {
+			commandArgs = append(commandArgs, args[0])
+			consumed = 1
+		}
+		args = args[consumed:]
+	}
+	return commandArgs, options, nil
 }
 
-func collectGlobalOptions(
-	args []string,
-	commandArgs []string,
-	options globalOptions,
-) ([]string, globalOptions, error) {
-	if len(args) == 0 {
-		return commandArgs, options, nil
-	}
-	if args[0] == "--" {
-		return append(commandArgs, args...), options, nil
-	}
-	color, err := colorOption(args)
-	if err != nil {
-		return nil, options, err
-	}
-	return collectColorOption(args, commandArgs, options, color)
-}
-
-func collectColorOption(
-	args []string,
-	commandArgs []string,
-	options globalOptions,
-	color colorArgument,
-) ([]string, globalOptions, error) {
-	if !color.found {
-		return collectGlobalOptions(args[1:], append(commandArgs, args[0]), options)
-	}
-	mode, err := dx.ParseColorMode(color.value)
-	if err != nil {
-		return nil, options, err
-	}
-	options.color = mode
-	return collectGlobalOptions(args[color.consumed:], commandArgs, options)
-}
-
-func colorOption(args []string) (colorArgument, error) {
+func parseColorOption(args []string, options *globalOptions) (int, error) {
 	value, found := strings.CutPrefix(args[0], "--color=")
 	if found {
-		return colorArgument{value: value, consumed: 1, found: true}, nil
+		return 1, options.setColor(value)
 	}
 	if args[0] != "--color" {
-		return colorArgument{}, nil
+		return 0, nil
 	}
 	if len(args) < 2 {
-		return colorArgument{}, fmt.Errorf("--color requires auto, always, or never")
+		return 0, fmt.Errorf("--color requires auto, always, or never")
 	}
-	return colorArgument{value: args[1], consumed: 2, found: true}, nil
+	return 2, options.setColor(args[1])
+}
+
+func (o *globalOptions) setColor(value string) error {
+	mode, err := dx.ParseColorMode(value)
+	if err != nil {
+		return err
+	}
+	o.color = mode
+	return nil
 }
 
 func cleanupTaskLabel(apply bool) string {
