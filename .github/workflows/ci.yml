@@ -24,7 +24,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7.0.0 # Immutable release; SHA archive returns 404.
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.2"
           cache: true
 
       - name: Check formatting
@@ -87,7 +87,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7.0.0 # Immutable release; SHA archive returns 404.
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.2"
           cache: true
 
       - name: Run security scans
@@ -110,7 +110,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7.0.0 # Immutable release; SHA archive returns 404.
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.2"
           cache: true
 
       - name: Run CLI end-to-end tests
@@ -129,7 +129,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7.0.0 # Immutable release; SHA archive returns 404.
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.2"
           cache: true
 
       - name: Run isolated process end-to-end tests
@@ -150,7 +150,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7.0.0 # Immutable release; SHA archive returns 404.
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.2"
           cache: true
 
       - name: Check GoReleaser configuration
