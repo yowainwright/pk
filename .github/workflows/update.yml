@@ -23,7 +23,7 @@ jobs:
           persist-credentials: false
 
       - name: Update dependencies and open a pull request
-        uses: yowainwright/codependence@794ecc90f9dc614a2ddc478e1851a97b87259485 # v1.0.15
+        uses: yowainwright/codependence@58d3c029ea39bc30b8ca9f1262ac3f4d2cb189d1 # v1.0.16
         with:
           config: .codependencerc
           targets: go docker github-actions
