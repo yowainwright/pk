@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/yowainwright/pk/internal/helpers"
 )
 
 const (
@@ -196,13 +198,10 @@ func readEvents(r io.Reader) ([]Event, error) {
 }
 
 func recentEvents(events []Event, cutoff time.Time) []Event {
-	recent := make([]Event, 0, len(events))
-	for _, event := range events {
-		if !event.Time.Before(cutoff) {
-			recent = append(recent, event)
-		}
+	isRecent := func(event Event) bool {
+		return !event.Time.Before(cutoff)
 	}
-	return recent
+	return helpers.Filter(events, isRecent)
 }
 
 func trimEvents(events []Event, maxBytes int64) []Event {
