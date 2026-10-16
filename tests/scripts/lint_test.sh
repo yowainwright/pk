@@ -21,8 +21,8 @@ write_fake_go() {
   cat > "$fixture/bin/go" << 'EOF'
 #!/usr/bin/env sh
 case "$*" in
-  'version -m '*) printf 'linter: go1.26.5\n' ;;
-  'env GOVERSION') printf 'go1.26.5\n' ;;
+  'version -m '*) printf 'linter: go1.27.2\n' ;;
+  'env GOVERSION') printf 'go1.27.2\n' ;;
   'vet ./...') exit "${VET_STATUS:-0}" ;;
 esac
 EOF
@@ -65,7 +65,7 @@ EOF
 }
 
 prepare_fixture() {
-  mkdir -p "$fixture/scripts/lib" "$fixture/bin/tools/golangci-lint-v2.12.2"
+  mkdir -p "$fixture/scripts/lib" "$fixture/bin/tools/golangci-lint-v2.14.0"
   cp "$TEST_ROOT/scripts/lint.sh" "$TEST_ROOT/scripts/lint-session.sh" "$fixture/scripts/"
   cp "$TEST_ROOT/scripts/.shellcheck-legibility.toml" "$fixture/scripts/"
   cp "$TEST_ROOT/scripts/lib/go-tool.sh" "$fixture/scripts/lib/"
@@ -79,8 +79,8 @@ prepare_fixture() {
   write_fake_shell_linters
   write_fake_custom_linter
   write_fake_mise
-  cp bin/legibility-golangci-lint bin/tools/golangci-lint-v2.12.2/golangci-lint
-  chmod +x bin/* bin/tools/golangci-lint-v2.12.2/golangci-lint
+  cp bin/legibility-golangci-lint bin/tools/golangci-lint-v2.14.0/golangci-lint
+  chmod +x bin/* bin/tools/golangci-lint-v2.14.0/golangci-lint
   export PATH="$fixture/bin:$PATH"
 }
 

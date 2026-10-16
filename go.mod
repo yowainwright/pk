@@ -1,6 +1,6 @@
 module github.com/yowainwright/pk
 
-go 1.26.0
+go 1.27.2
 
 require github.com/shirou/gopsutil/v4 v4.26.9
 

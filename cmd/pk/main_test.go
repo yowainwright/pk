@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/yowainwright/pk/internal/cleanup"
 	"github.com/yowainwright/pk/internal/cleanup/docker"
 	"github.com/yowainwright/pk/internal/config"
+	"github.com/yowainwright/pk/internal/dx"
 	"github.com/yowainwright/pk/internal/lifecycle"
 	"github.com/yowainwright/pk/internal/process"
 )
@@ -202,6 +204,39 @@ func TestRunAcceptsGlobalColorOptions(t *testing.T) {
 				t.Fatalf("unexpected version output %q", out.String())
 			}
 		})
+	}
+}
+
+func TestParseGlobalOptionsUsesLastColor(t *testing.T) {
+	args := []string{"--color=always", "scan", "--cpu", "90", "--color", "never"}
+	commandArgs, options, err := parseGlobalOptions(args)
+	requireNoError(t, err)
+	expected := []string{"scan", "--cpu", "90"}
+	if !slices.Equal(commandArgs, expected) {
+		t.Fatalf("unexpected command arguments: %q", commandArgs)
+	}
+	if options.color != dx.ColorNever {
+		t.Fatalf("expected last color mode, got %q", options.color)
+	}
+}
+
+func TestParseGlobalOptionsStopsAtSeparator(t *testing.T) {
+	args := []string{"--color=always", "ignore", "--", "--color", "never"}
+	commandArgs, options, err := parseGlobalOptions(args)
+	requireNoError(t, err)
+	expected := []string{"ignore", "--", "--color", "never"}
+	if !slices.Equal(commandArgs, expected) {
+		t.Fatalf("unexpected command arguments: %q", commandArgs)
+	}
+	if options.color != dx.ColorAlways {
+		t.Fatalf("parsed color after separator: %q", options.color)
+	}
+}
+
+func TestParseGlobalOptionsRejectsMissingColor(t *testing.T) {
+	_, _, err := parseGlobalOptions([]string{"scan", "--color"})
+	if err == nil {
+		t.Fatal("expected missing color mode error")
 	}
 }
 
@@ -751,6 +786,23 @@ func TestRunSessionAppendsLifecycleEvent(t *testing.T) {
 		t.Fatalf("expected hydrated shell create time, got %d", event.ShellCreateTime)
 	}
 	assertSessionEventExitCode(t, event)
+}
+
+func TestParseSessionEventPreservesOptionalExitCode(t *testing.T) {
+	event, err := parseSessionEvent(nil, io.Discard)
+	requireNoError(t, err)
+	if event.ExitCode != nil {
+		t.Fatalf("expected omitted exit code, got %v", event.ExitCode)
+	}
+	args := []string{"--exit-code", "7", "--exit-code", "0"}
+	event, err = parseSessionEvent(args, io.Discard)
+	requireNoError(t, err)
+	if event.ExitCode == nil {
+		t.Fatal("expected explicit zero exit code")
+	}
+	if *event.ExitCode != 0 {
+		t.Fatalf("expected last exit code, got %d", *event.ExitCode)
+	}
 }
 
 func TestRunSessionRejectsOutOfRangePID(t *testing.T) {

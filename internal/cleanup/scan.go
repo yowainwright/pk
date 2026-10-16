@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -100,13 +101,10 @@ func unprotectedDescendants(
 	tree *process.Index,
 ) []process.Process {
 	descendants := tree.Descendants(proc.PID)
-	filtered := make([]process.Process, 0, len(descendants))
-	for _, descendant := range descendants {
-		if !cfg.IsProtected(descendant.Name) {
-			filtered = append(filtered, descendant)
-		}
+	isProtected := func(descendant process.Process) bool {
+		return cfg.IsProtected(descendant.Name)
 	}
-	return filtered
+	return slices.DeleteFunc(descendants, isProtected)
 }
 
 func newReport(
@@ -354,31 +352,16 @@ func (w *ancestorWalker) next(pid int32) (process.Process, bool) {
 }
 
 func matchesAnyCommand(name string, command string, commands []string) bool {
-	candidates := executableCandidates(name, command)
-	for _, current := range commands {
-		if candidates[current] {
-			return true
-		}
+	executable := executableName(name)
+	nameMatches := slices.Contains(commands, executable)
+	if nameMatches {
+		return true
+	}
+	for field := range strings.FieldsSeq(command) {
+		executable = executableName(field)
+		return slices.Contains(commands, executable)
 	}
 	return false
-}
-
-func executableCandidates(name string, command string) map[string]bool {
-	candidates := make(map[string]bool, 2)
-	addExecutable(candidates, name)
-	fields := strings.Fields(command)
-	if len(fields) > 0 {
-		addExecutable(candidates, fields[0])
-	}
-	return candidates
-}
-
-func addExecutable(candidates map[string]bool, value string) {
-	executable := executableName(value)
-	if executable == "" {
-		return
-	}
-	candidates[executable] = true
 }
 
 func executableName(value string) string {

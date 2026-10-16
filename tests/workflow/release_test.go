@@ -93,8 +93,8 @@ func assertReleaseScriptPaths(t *testing.T, script string) {
 
 func assertSecurityToolVersions(t *testing.T, security string) {
 	t.Helper()
-	assertContains(t, security, "v1.2.0")
-	assertContains(t, security, "v2.25.0")
+	assertContains(t, security, "v1.9.0")
+	assertContains(t, security, "v2.29.0")
 }
 
 func TestBugReportSupportsPreDoctorReleases(t *testing.T) {
