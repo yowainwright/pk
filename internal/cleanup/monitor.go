@@ -133,8 +133,7 @@ func (m *Monitor) handleProcess(ctx context.Context, p process.Process, tree *pr
 		return
 	}
 
-	descendants := unprotectedDescendants(m.cfg, p, tree)
-	m.killExpiredOffense(ctx, p, descendants)
+	m.killExpiredOffense(ctx, p, tree)
 }
 
 func (m *Monitor) recordNewOffense(p process.Process) bool {
@@ -150,7 +149,7 @@ func (m *Monitor) recordNewOffense(p process.Process) bool {
 func (m *Monitor) killExpiredOffense(
 	ctx context.Context,
 	p process.Process,
-	descendants []process.Process,
+	tree *process.Index,
 ) {
 	off := m.offenses[p.PID]
 	off.proc = p
@@ -159,7 +158,7 @@ func (m *Monitor) killExpiredOffense(
 		return
 	}
 
-	m.killProcess(ctx, p, descendants, elapsed)
+	m.killProcess(ctx, p, tree, elapsed)
 	delete(m.offenses, p.PID)
 }
 
@@ -193,7 +192,7 @@ func (m *Monitor) recordOffense(p process.Process) {
 func (m *Monitor) killProcess(
 	ctx context.Context,
 	p process.Process,
-	descendants []process.Process,
+	tree *process.Index,
 	duration time.Duration,
 ) {
 	if !m.apply {
@@ -202,6 +201,7 @@ func (m *Monitor) killProcess(
 	}
 	m.logKill(p, duration)
 
+	descendants := unprotectedDescendants(m.cfg, p, tree)
 	if !m.killTreeAndLog(ctx, p, descendants) {
 		return
 	}

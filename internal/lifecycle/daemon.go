@@ -9,6 +9,7 @@ import (
 
 	"github.com/yowainwright/pk/internal/audit"
 	"github.com/yowainwright/pk/internal/config"
+	"github.com/yowainwright/pk/internal/helpers"
 	"github.com/yowainwright/pk/internal/process"
 )
 
@@ -99,12 +100,7 @@ func (r *Runner) applyCurrentEvents(
 		return applyEvents(state, events)
 	}
 	r.removeEarlierSessions(&state)
-	current := make([]Event, 0, len(events))
-	for _, event := range events {
-		if r.currentEvent(event) {
-			current = append(current, event)
-		}
-	}
+	current := helpers.Filter(events, r.currentEvent)
 	return applyEvents(state, current)
 }
 

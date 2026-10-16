@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/yowainwright/pk/internal/audit"
+	"github.com/yowainwright/pk/internal/helpers"
 	"github.com/yowainwright/pk/internal/process"
 )
 
@@ -45,13 +46,7 @@ func Run(
 }
 
 func Targets(reports []Report) []Report {
-	targets := make([]Report, 0, len(reports))
-	for _, report := range reports {
-		if isTarget(report) {
-			targets = append(targets, report)
-		}
-	}
-	return targets
+	return helpers.Filter(reports, isTarget)
 }
 
 func WriteResults(w io.Writer, results []Result) error {
