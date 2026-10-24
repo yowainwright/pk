@@ -164,6 +164,8 @@ Try the [dev-server recipe](#check-cleanup-with-a-dev-server) to check cleanup.
 
 ### `pk history`
 
+<!-- history modes and summary fields from cmd/pk/history.go, cmd/pk/history_output.go, internal/widget/snapshot.go, and internal/service/activity.go -->
+
 Print the retained cleanup records as JSON lines. Each record includes the
 action, target, reasons, and whether cleanup was applied. Errors appear in an
 `error` field when present.
@@ -172,6 +174,26 @@ The log includes daemon actions and manual `cleanup` previews and actions.
 `"applied":false` means a preview or skipped action. `"applied":true` means
 cleanup was attempted; check the `error` field for failures. An empty log has no
 records to print. See the [audit record format](internal/audit/audit.go).
+
+Summarize the last 24 hours:
+
+```sh
+pk history --summary
+pk history --summary --json
+pk history --summary --since 12h
+```
+
+The summary counts applied process-kill and container-stop attempts, separating
+successes and failures. Previews and skipped actions are excluded. Counts cover
+retained history, which may contain less than the requested window.
+
+JSON includes `service_state` (`active`, `inactive`, or `unknown`),
+`last_check_at` (the last recorded daemon check), `tracked_processes` (the current
+managed-process count from `pk obs`), reporting bounds, and separate
+process/container outcomes. Tracking is a current count; cleanup totals cover the
+reporting window. Missing checks or tracked counts use `null`; unreadable outcomes use
+`"outcomes":null`, rather than zero. Source-read failures exit 1; invalid summary
+arguments exit 2. Reading a report does not run cleanup.
 
 ### `pk doctor`
 
@@ -474,5 +496,10 @@ mise run check
 The [contributing guide](.github/CONTRIBUTING.md) also covers process tests and
 release previews. Report vulnerabilities through the
 [security policy](.github/SECURITY.md).
+
+<!-- native widget development from widget/README.md -->
+
+For the optional macOS widget, see the [local development instructions](widget/README.md).
+Reports currently require manual publication; background integration is unfinished.
 
 [MIT License](LICENSE)

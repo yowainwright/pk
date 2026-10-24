@@ -1219,6 +1219,16 @@ func (m *fakeBackgroundManager) Status(context.Context) (string, error) {
 	return m.status, m.err
 }
 
+func (m *fakeBackgroundManager) Activity(context.Context) (string, error) {
+	if m.err != nil {
+		return "unknown", m.err
+	}
+	if m.status == "active" {
+		return "active", nil
+	}
+	return "inactive", nil
+}
+
 type fakeLifecycleStore struct {
 	events       []lifecycle.Event
 	appended     []lifecycle.Event

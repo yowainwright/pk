@@ -80,6 +80,15 @@ Stops background cleanup and removes automatic startup and the zsh hook.
 Keeps the executable, saved ignores, and retained history.
 `
 
+const historyUsage = `Usage: pk history [--summary [--since DURATION] [--json]]
+
+Without flags, prints retained cleanup records as JSON lines.
+--summary reports applied cleanup successes and failures, service activity,
+and the last recorded daemon check. The default window is 24h.
+--since accepts a positive Go duration, such as 12h or 24h.
+--json writes the summary as one JSON object. Requires --summary.
+`
+
 const ignoreUsage = `Usage: pk ignore NAME... | pk ignore --list
 
 Saves exact, case-sensitive process names for background and manual process cleanup.
@@ -232,7 +241,7 @@ func utilityUsage(topic string) (string, bool) {
 	case "install":
 		return installUsage, true
 	case "history":
-		return "Usage: pk history\n", true
+		return historyUsage, true
 	case "status":
 		return "Usage: pk status\n", true
 	case "doctor":
