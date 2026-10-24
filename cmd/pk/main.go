@@ -52,6 +52,7 @@ type backgroundManager interface {
 	Install(context.Context) error
 	Uninstall(context.Context) error
 	Status(context.Context) (string, error)
+	Activity(context.Context) (string, error)
 }
 
 type cleanupOptions struct {
@@ -82,6 +83,7 @@ type application struct {
 }
 
 type commandDependencies struct {
+	now              func() time.Time
 	newLister        func() process.Lister
 	newScanner       func(*config.Config, process.Lister) processScanner
 	newAudit         func() (auditStore, error)
@@ -101,6 +103,7 @@ type commandDependencies struct {
 
 func defaultDependencies() commandDependencies {
 	return commandDependencies{
+		now:              time.Now,
 		newLister:        func() process.Lister { return process.NewLister() },
 		newScanner:       func(cfg *config.Config, lister process.Lister) processScanner { return cleanup.NewScanner(cfg, lister) },
 		newAudit:         func() (auditStore, error) { return audit.DefaultLog() },
@@ -177,7 +180,7 @@ func (a application) dispatch(command string, args []string) error {
 
 func validateCommandArguments(command string, args []string) error {
 	switch command {
-	case "history", "obs", "uninstall", "status", "doctor", "enable", "disable", "__session-id":
+	case "obs", "uninstall", "status", "doctor", "enable", "disable", "__session-id":
 		if len(args) != 0 {
 			return fmt.Errorf("%s does not accept arguments", command)
 		}
@@ -207,7 +210,7 @@ func (a application) dispatchPrimary(command string, args []string) (bool, error
 	case "cleanup":
 		return true, a.runCleanup(args)
 	case "history":
-		return true, a.runHistory()
+		return true, a.runHistoryOptions(args)
 	case "obs":
 		return true, a.runObs()
 	default:
@@ -1220,7 +1223,15 @@ func (a application) exitOnError(err error) {
 
 	a.ui.Logger().Error("pk error", "error", err)
 	a.ui.Logger().Info("Run pk doctor to create a shareable diagnostic report")
-	a.deps.exitFunc(1)
+	a.deps.exitFunc(commandExitCode(err))
+}
+
+func commandExitCode(err error) int {
+	var usage historyUsageError
+	if errors.As(err, &usage) {
+		return 2
+	}
+	return 1
 }
 
 func isVersionCommand(args []string) bool {
