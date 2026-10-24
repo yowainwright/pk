@@ -127,7 +127,9 @@ final class PKSnapshotTests: XCTestCase {
     let current = try fixture("ready")
     try store.write(current)
     let older = try replacing("19:30:00Z", with: "19:29:59Z")
-    XCTAssertThrowsError(try store.write(older))
+    XCTAssertThrowsError(try store.write(older)) { error in
+      XCTAssertEqual(error as? SnapshotError, .staleWrite)
+    }
     XCTAssertEqual(try store.read().generatedAt, try PKSnapshot.decode(current).generatedAt)
   }
 
