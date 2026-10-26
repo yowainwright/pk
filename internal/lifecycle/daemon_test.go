@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,129 @@ import (
 
 	"github.com/yowainwright/pk/internal/process"
 )
+
+func TestTickNotifiesOnceForCurrentCleanupBatch(t *testing.T) {
+	store, runner := notificationRunner()
+	called := 0
+	runner.afterCleanup = func(ctx context.Context, outcomes audit.Outcomes) {
+		called++
+		want := audit.Counts{Successes: 2}
+		if outcomes.Processes != want {
+			t.Fatalf("got cleanup counts %+v, want %+v", outcomes.Processes, want)
+		}
+		if !store.acknowledged {
+			t.Fatal("notification ran before saving cleanup")
+		}
+	}
+	requireNoError(t, runner.Tick(t.Context()))
+	store.procs = nil
+	requireNoError(t, runner.Tick(t.Context()))
+	if called != 1 {
+		t.Fatalf("got %d notifications, want one cleanup batch", called)
+	}
+}
+
+func TestTickReportsCleanupFailures(t *testing.T) {
+	_, runner := notificationRunner()
+	killer := &fakeKiller{err: errors.New("permission denied")}
+	runner.killer = killer
+	var got audit.Outcomes
+	runner.afterCleanup = func(ctx context.Context, outcomes audit.Outcomes) { got = outcomes }
+	requireNoError(t, runner.Tick(t.Context()))
+	want := audit.Counts{Failures: 2}
+	if got.Processes != want {
+		t.Fatalf("got cleanup counts %+v, want %+v", got.Processes, want)
+	}
+}
+
+func TestTickDoesNotRepeatFailureNotifications(t *testing.T) {
+	store, runner := notificationRunner()
+	killer := &fakeKiller{err: errors.New("permission denied")}
+	runner.killer = killer
+	called := 0
+	runner.afterCleanup = func(context.Context, audit.Outcomes) { called++ }
+	for range 3 {
+		requireNoError(t, runner.Tick(t.Context()))
+	}
+	if called != 1 {
+		t.Fatalf("got %d failure alerts, want one", called)
+	}
+	if len(killer.killed) != 6 {
+		t.Fatalf("cleanup stopped retrying: %v", killer.killed)
+	}
+	if len(store.auditEvents) != 6 {
+		t.Fatalf("cleanup retries were not audited: %+v", store.auditEvents)
+	}
+}
+
+func TestTickNotifiesWhenFailedTargetsRecover(t *testing.T) {
+	_, runner := notificationRunner()
+	killer := &fakeKiller{err: errors.New("permission denied")}
+	runner.killer = killer
+	var got []audit.Counts
+	runner.afterCleanup = func(ctx context.Context, outcomes audit.Outcomes) {
+		got = append(got, outcomes.Processes)
+	}
+	requireNoError(t, runner.Tick(t.Context()))
+	killer.err = nil
+	requireNoError(t, runner.Tick(t.Context()))
+	want := []audit.Counts{{Failures: 2}, {Successes: 2}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got notifications %+v, want %+v", got, want)
+	}
+}
+
+func TestTickNotifiesForReusedPIDWithNewIdentity(t *testing.T) {
+	store, runner := notificationRunner()
+	runner.killer = &fakeKiller{err: errors.New("permission denied")}
+	var got []audit.Counts
+	runner.afterCleanup = func(ctx context.Context, outcomes audit.Outcomes) {
+		got = append(got, outcomes.Processes)
+	}
+	requireNoError(t, runner.Tick(t.Context()))
+	managed := managedChild()
+	delete(store.state.Processes, managed.ProcessKey.String())
+	managed.ProcessKey.CreateTime++
+	store.state.Processes[managed.ProcessKey.String()] = managed
+	store.procs[0].CreateTime++
+	requireNoError(t, runner.Tick(t.Context()))
+	want := []audit.Counts{{Failures: 2}, {Failures: 1}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got notifications %+v, want %+v", got, want)
+	}
+}
+
+func TestTickForgetsFailuresAfterTargetsLeaveTracking(t *testing.T) {
+	store, runner := notificationRunner()
+	runner.killer = &fakeKiller{err: errors.New("permission denied")}
+	requireNoError(t, runner.Tick(t.Context()))
+	clear(store.state.Processes)
+	store.procs = nil
+	requireNoError(t, runner.Tick(t.Context()))
+	if len(runner.failedCleanups) != 0 {
+		t.Fatalf("retained failures for removed processes: %v", runner.failedCleanups)
+	}
+}
+
+func TestTickDoesNotNotifyForProtectedProcesses(t *testing.T) {
+	_, runner := notificationRunner()
+	runner.cfg.Protected = append(runner.cfg.Protected, childProcess().Name)
+	runner.afterCleanup = func(context.Context, audit.Outcomes) { t.Fatal("protected processes triggered an alert") }
+	requireNoError(t, runner.Tick(t.Context()))
+}
+
+func notificationRunner() (*fakeStore, *Runner) {
+	store := newFakeStore(sessionStartEvent(), sessionStopEvent())
+	first := managedChild()
+	second := first
+	second.ProcessKey.PID++
+	store.state.Processes[first.ProcessKey.String()] = first
+	store.state.Processes[second.ProcessKey.String()] = second
+	secondProcess := childProcess()
+	secondProcess.PID++
+	store.procs = []process.Process{childProcess(), secondProcess}
+	return store, testRunner(store, nil)
+}
 
 func TestTickReloadsSavedIgnores(t *testing.T) {
 	store := newFakeStore(sessionStartEvent(), sessionStopEvent())
@@ -496,13 +620,14 @@ type fakeKiller struct {
 	called bool
 	pid    int32
 	killed []int32
+	err    error
 }
 
 func (k *fakeKiller) Kill(ctx context.Context, target process.Process) error {
 	k.called = true
 	k.pid = target.PID
 	k.killed = append(k.killed, target.PID)
-	return nil
+	return k.err
 }
 
 func (k *fakeKiller) killedPID(pid int32) bool {

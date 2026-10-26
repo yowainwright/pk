@@ -164,7 +164,7 @@ Try the [dev-server recipe](#check-cleanup-with-a-dev-server) to check cleanup.
 
 ### `pk history`
 
-<!-- history modes and summary fields from cmd/pk/history.go, cmd/pk/history_output.go, internal/widget/snapshot.go, and internal/service/activity.go -->
+<!-- history modes and summary fields from cmd/pk/history.go, cmd/pk/history_output.go, internal/audit/summary.go, and internal/service/activity.go -->
 
 Print the retained cleanup records as JSON lines. Each record includes the
 action, target, reasons, and whether cleanup was applied. Errors appear in an
@@ -482,6 +482,21 @@ Some servers exit on their own when a tab closes. If the server is gone but
 there is no matching cleanup record, that test does not establish that pk
 stopped it.
 
+## macOS notifications
+
+<!-- cleanup notifications from cmd/pk/main.go and internal/lifecycle/daemon.go -->
+
+Applied cleanup sends a brief notification about what just happened, such as
+"Stopped 3 leftover processes." Container stops and cleanup failures are included
+when present. The background service sends at most one notification per cleanup
+batch and reports a failed process once while it remains tracked. Retries continue
+and are recorded in history. Restarting the service resets the alert limit.
+Foreground monitor kill alerts identify the process and PID.
+
+Previews, protected targets, and idle checks stay quiet. Delivery follows macOS
+notification settings. Notification failures produce warnings and do not stop
+cleanup. Use `pk history --summary` for historical totals.
+
 ## Contributing
 
 <!-- contributor checks derived from .mise.toml and .github/CONTRIBUTING.md -->
@@ -496,10 +511,5 @@ mise run check
 The [contributing guide](.github/CONTRIBUTING.md) also covers process tests and
 release previews. Report vulnerabilities through the
 [security policy](.github/SECURITY.md).
-
-<!-- native widget development from widget/README.md -->
-
-For the optional macOS widget, see the [local development instructions](widget/README.md).
-Reports currently require manual publication; background integration is unfinished.
 
 [MIT License](LICENSE)

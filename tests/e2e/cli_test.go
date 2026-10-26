@@ -17,6 +17,10 @@ import (
 
 const e2eVersion = "v9.8.7-e2e"
 
+const fakeNotificationTool = `#!/bin/sh
+printf '%s\n' "$@" > "$PK_E2E_NOTIFICATION_LOG"
+`
+
 var (
 	repositoryRoot string
 	suiteDir       string
@@ -362,6 +366,30 @@ func TestEnableDisablePreservesSavedIgnoresAndHistory(t *testing.T) {
 		t.Fatalf("service remains: %v", err)
 	}
 	assertHelpRoute(t, []string{"help", "enable"}, "Usage: pk enable")
+}
+
+func TestCleanupDeliversOnlyCurrentResultToMacOSNotifications(t *testing.T) {
+	supported := runtime.GOOS == "darwin"
+	if !supported {
+		t.Skip("macOS notification transport")
+	}
+	path := notificationFixture(t)
+	result := runCLI(t, "cleanup", "--apply", "--scope", "containers")
+	if result.err != nil {
+		t.Fatalf("cleanup failed: %v\n%s", result.err, result.stderr)
+	}
+	want := `display notification "Stopped 1 container." with title "pk"`
+	assertFileContains(t, path, want)
+}
+
+func notificationFixture(t *testing.T) string {
+	t.Helper()
+	setupDockerFixture(t)
+	path := filepath.Join(t.TempDir(), "notification.txt")
+	tool := filepath.Join(os.Getenv("PATH"), "osascript")
+	writeExecutable(t, tool, fakeNotificationTool)
+	t.Setenv("PK_E2E_NOTIFICATION_LOG", path)
+	return path
 }
 
 func TestDockerCleanupApplyIsAudited(t *testing.T) {

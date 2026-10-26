@@ -28,6 +28,7 @@ type RunnerOptions struct {
 	Now            func() time.Time
 	StartedAt      time.Time
 	ReadCreateTime func(context.Context, int32) (int64, error)
+	AfterCleanup   func(context.Context, audit.Outcomes)
 }
 
 type Runner struct {
@@ -39,6 +40,8 @@ type Runner struct {
 	now            func() time.Time
 	startedAt      time.Time
 	readCreateTime func(context.Context, int32) (int64, error)
+	afterCleanup   func(context.Context, audit.Outcomes)
+	failedCleanups map[string]bool
 }
 
 const maxAppliedEventIDs = 2048
@@ -60,6 +63,7 @@ func NewRunner(
 		now:            daemonClock(options.Now),
 		startedAt:      daemonStartedAt(options.StartedAt),
 		readCreateTime: daemonCreateTimeReader(options.ReadCreateTime),
+		afterCleanup:   options.AfterCleanup,
 	}
 }
 
@@ -85,11 +89,11 @@ func (r *Runner) Tick(ctx context.Context) error {
 	if err != nil {
 		return r.saveError(state, err)
 	}
-	state, err = r.reconcile(ctx, state, procs)
+	state, counts, err := r.reconcile(ctx, state, procs)
 	if err != nil {
 		return r.saveError(state, err)
 	}
-	return r.finishTick(state, events)
+	return r.finishTick(ctx, state, events, counts)
 }
 
 func (r *Runner) applyCurrentEvents(
@@ -124,13 +128,41 @@ func (r *Runner) removeEarlierSessions(state *State) {
 	}
 }
 
-func (r *Runner) finishTick(state State, events []Event) error {
+func (r *Runner) finishTick(
+	ctx context.Context,
+	state State,
+	events []Event,
+	counts audit.Counts,
+) error {
 	setDaemonState(&state, os.Getpid(), r.startedAt, r.now())
 	retainAppliedEvents(&state, events)
+	r.retainCleanupFailures(state)
 	if err := r.store.SaveState(state); err != nil {
 		return err
 	}
-	return r.store.AcknowledgeEvents()
+	if err := r.store.AcknowledgeEvents(); err != nil {
+		return err
+	}
+	r.notifyCleanup(ctx, counts)
+	return nil
+}
+
+func (r *Runner) notifyCleanup(ctx context.Context, counts audit.Counts) {
+	attempts := counts.Successes + counts.Failures
+	shouldNotify := attempts > 0 && r.afterCleanup != nil
+	if !shouldNotify {
+		return
+	}
+	outcomes := audit.Outcomes{Processes: counts}
+	r.afterCleanup(ctx, outcomes)
+}
+
+func (r *Runner) retainCleanupFailures(state State) {
+	for key := range r.failedCleanups {
+		if _, tracked := state.Processes[key]; !tracked {
+			delete(r.failedCleanups, key)
+		}
+	}
 }
 
 func (r *Runner) loop(ctx context.Context, ticks <-chan time.Time) error {
@@ -409,13 +441,14 @@ func (r *Runner) reconcile(
 	ctx context.Context,
 	state State,
 	procs []process.Process,
-) (State, error) {
+) (State, audit.Counts, error) {
 	live := liveProcesses(procs)
 	state, deferred := r.reconcileSessions(ctx, state, procs, live)
 	if err := ctx.Err(); err != nil {
-		return state, err
+		return state, audit.Counts{}, err
 	}
-	return r.killEligible(ctx, state, live, deferred), nil
+	state, counts := r.killEligible(ctx, state, live, deferred)
+	return state, counts, nil
 }
 
 func (r *Runner) reconcileSessions(
@@ -568,19 +601,18 @@ func (r *Runner) killEligible(
 	state State,
 	live map[string]process.Process,
 	deferred map[string]bool,
-) State {
+) (State, audit.Counts) {
+	var counts audit.Counts
 	for key, managed := range state.Processes {
 		if deferred[managed.TerminalSessionID] {
 			continue
 		}
-		proc, ok := live[key]
-		if !ok {
-			state = r.pruneMissingProcess(ctx, state, managed.ProcessKey)
-			continue
-		}
-		state = r.killIfEligible(ctx, state, key, managed, proc)
+		var current audit.Counts
+		state, current = r.killIfEligible(ctx, state, key, managed, live)
+		counts.Successes += current.Successes
+		counts.Failures += current.Failures
 	}
-	return state
+	return state, counts
 }
 
 func (r *Runner) pruneMissingProcess(
@@ -605,12 +637,16 @@ func (r *Runner) killIfEligible(
 	state State,
 	key string,
 	managed ManagedProcess,
-	proc process.Process,
-) State {
+	live map[string]process.Process,
+) (State, audit.Counts) {
+	proc, ok := live[key]
+	if !ok {
+		return r.pruneMissingProcess(ctx, state, managed.ProcessKey), audit.Counts{}
+	}
 	session := state.Sessions[managed.TerminalSessionID]
 	reason, ok := r.killReason(state, session)
 	if !ok {
-		return state
+		return state, audit.Counts{}
 	}
 	state.LastDecision = reason + ": " + managed.TerminalSessionID
 	return r.handleEligibleProcess(ctx, state, key, proc, reason)
@@ -622,13 +658,13 @@ func (r *Runner) handleEligibleProcess(
 	key string,
 	proc process.Process,
 	reason string,
-) State {
+) (State, audit.Counts) {
 	protected, err := r.skipProtected(proc, reason)
 	if err != nil {
 		state.LastError = err.Error()
 	}
 	if protected {
-		return state
+		return state, audit.Counts{}
 	}
 	return r.killManagedProcess(ctx, state, key, proc, reason)
 }
@@ -639,14 +675,25 @@ func (r *Runner) killManagedProcess(
 	key string,
 	proc process.Process,
 	reason string,
-) State {
+) (State, audit.Counts) {
 	err := r.kill(ctx, proc, reason)
 	if err != nil {
 		state.LastError = err.Error()
-		return state
+		return state, r.recordCleanupFailure(key)
 	}
 	delete(state.Processes, key)
-	return state
+	return state, audit.Counts{Successes: 1}
+}
+
+func (r *Runner) recordCleanupFailure(key string) audit.Counts {
+	if r.failedCleanups[key] {
+		return audit.Counts{}
+	}
+	if r.failedCleanups == nil {
+		r.failedCleanups = make(map[string]bool)
+	}
+	r.failedCleanups[key] = true
+	return audit.Counts{Failures: 1}
 }
 
 func (r *Runner) skipProtected(proc process.Process, reason string) (bool, error) {

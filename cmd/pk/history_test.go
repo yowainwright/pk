@@ -9,8 +9,75 @@ import (
 
 	"github.com/yowainwright/pk/internal/audit"
 	"github.com/yowainwright/pk/internal/lifecycle"
-	"github.com/yowainwright/pk/internal/widget"
 )
+
+const historySummaryJSONContract = `{
+  "schema_version": 1,
+  "generated_at": "2026-10-18T19:30:00Z",
+  "last_check_at": "2026-10-18T19:29:58Z",
+  "service_state": "active",
+  "tracked_processes": 2,
+  "window_start": "2026-10-17T19:30:00Z",
+  "window_end": "2026-10-18T19:30:00Z",
+  "status": "ready",
+  "coverage": "retained",
+  "outcomes": {
+    "processes": {
+      "successes": 1,
+      "failures": 1
+    },
+    "containers": {
+      "successes": 1,
+      "failures": 0
+    }
+  }
+}
+`
+
+func TestHistorySummaryJSONContract(t *testing.T) {
+	deps := historySummaryDeps(t)
+	var out, formatted bytes.Buffer
+	requireNoError(t, deps.run([]string{"history", "--summary", "--json"}, &out))
+	requireNoError(t, json.Indent(&formatted, out.Bytes(), "", "  "))
+	if formatted.String() != historySummaryJSONContract {
+		t.Fatalf("unexpected history JSON:\n%s", formatted.String())
+	}
+}
+
+func TestHistorySummaryZeroActivityWithoutRecordedCheck(t *testing.T) {
+	deps := commandDeps(t)
+	var out bytes.Buffer
+	requireNoError(t, deps.run([]string{"history", "--summary", "--json"}, &out))
+	summary := decodeHistorySnapshot(t, out.Bytes())
+	if summary.LastCheckAt != nil {
+		t.Fatal("invented a daemon check")
+	}
+	if summary.Outcomes == nil {
+		t.Fatal("empty history should have measured zero outcomes")
+	}
+	if *summary.Outcomes != (audit.Outcomes{}) {
+		t.Fatalf("got outcomes %+v, want zero activity", summary.Outcomes)
+	}
+}
+
+func TestHistorySummaryRejectsFutureChecksWithoutInventingCounts(t *testing.T) {
+	deps := historySummaryDeps(t)
+	now := deps.dependencies.now()
+	state := &deps.lifecycle.state
+	state.Daemon.LastTickAt = now.Add(time.Second)
+	var out bytes.Buffer
+	if err := deps.run([]string{"history", "--summary", "--json"}, &out); err == nil {
+		t.Fatal("accepted a future daemon check")
+	}
+	summary := decodeHistorySnapshot(t, out.Bytes())
+	invalid := summary.Status != "unavailable" || summary.Outcomes != nil
+	if invalid {
+		t.Fatalf("invented cleanup outcomes: %+v", summary)
+	}
+	if summary.TrackedProcesses != nil {
+		t.Fatal("invented a tracked-process count")
+	}
+}
 
 func TestHistorySummaryJSONCountsAppliedAttempts(t *testing.T) {
 	deps := commandDeps(t)
@@ -156,9 +223,26 @@ func TestHistoryUsageHasDistinctExitStatus(t *testing.T) {
 	}
 }
 
-func decodeHistorySnapshot(t *testing.T, data []byte) widget.Snapshot {
+func historySummaryDeps(t *testing.T) *commandTestDeps {
 	t.Helper()
-	var snapshot widget.Snapshot
+	deps := commandDeps(t)
+	now := time.Date(2026, time.October, 18, 19, 30, 0, 0, time.UTC)
+	deps.dependencies.now = func() time.Time { return now }
+	deps.background.status = "active"
+	state := &deps.lifecycle.state
+	state.Daemon.LastTickAt = now.Add(-2 * time.Second)
+	state.Processes = map[string]lifecycle.ManagedProcess{"one": {}, "two": {}}
+	deps.audit.events = []audit.Event{
+		{Time: now, Action: "kill", Applied: true, Name: "private-process"},
+		{Time: now, Action: "kill", Applied: true, Error: "private error"},
+		{Time: now, Action: "stop", TargetType: "container", Applied: true},
+	}
+	return deps
+}
+
+func decodeHistorySnapshot(t *testing.T, data []byte) historySummary {
+	t.Helper()
+	var snapshot historySummary
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		t.Fatalf("invalid snapshot JSON: %v\n%s", err, data)
 	}

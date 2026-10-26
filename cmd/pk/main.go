@@ -94,7 +94,7 @@ type commandDependencies struct {
 	newDaemon        func(*config.Config, lifecycle.StateStore, lifecycle.Audit) commandRunner
 	newBackground    func() (backgroundManager, error)
 	readCreateTime   func(context.Context, int32) (int64, error)
-	send             func(string, string) error
+	send             func(context.Context, string, string) error
 	notifySignalFunc func(chan<- os.Signal, ...os.Signal)
 	stopSignalFunc   func(chan<- os.Signal)
 	resetSignalsFunc func(...os.Signal)
@@ -331,15 +331,18 @@ func (a application) collectAuditedCleanup(
 	options cleanupOptions,
 	log auditStore,
 ) (cleanupResults, error) {
-	results, err := a.runProcessCleanup(ctx, cfg, options, log)
+	processResults, err := a.runProcessCleanup(ctx, cfg, options, log)
 	if err != nil {
 		return cleanupResults{}, operationError("cleaning processes", err)
 	}
 	containerResults, err := a.runDockerCleanup(ctx, log, options)
+	results := cleanupResults{processes: processResults, containers: containerResults}
+	outcomes := results.outcomes()
+	a.notifyCleanupOutcomes(ctx, outcomes)
 	if err != nil {
 		return cleanupResults{}, operationError("cleaning containers", err)
 	}
-	return cleanupResults{processes: results, containers: containerResults}, nil
+	return results, nil
 }
 
 func (a application) runProcessCleanup(
@@ -919,7 +922,10 @@ func (a application) newDaemon(
 	}
 	lister := a.deps.newLister()
 	processKiller := a.deps.newKiller()
-	return lifecycle.NewRunner(cfg, lister, processKiller, store, log, lifecycle.RunnerOptions{})
+	options := lifecycle.RunnerOptions{
+		AfterCleanup: a.notifyCleanupOutcomes,
+	}
+	return lifecycle.NewRunner(cfg, lister, processKiller, store, log, options)
 }
 
 func (a application) runSessionID() error {
@@ -1208,9 +1214,68 @@ func (a application) newMonitor(
 	return cleanup.NewMonitor(cfg, lister, processKiller, a.notifyKilled, monitorConfig)
 }
 
+func (results cleanupResults) outcomes() audit.Outcomes {
+	var outcomes audit.Outcomes
+	for _, result := range results.processes {
+		if result.Applied {
+			recordCleanupOutcome(&outcomes.Processes, result.Error)
+		}
+	}
+	for _, result := range results.containers {
+		if result.Applied {
+			recordCleanupOutcome(&outcomes.Containers, result.Error)
+		}
+	}
+	return outcomes
+}
+
+func recordCleanupOutcome(counts *audit.Counts, errorText string) {
+	if errorText != "" {
+		counts.Failures++
+		return
+	}
+	counts.Successes++
+}
+
+func (a application) notifyCleanupOutcomes(ctx context.Context, outcomes audit.Outcomes) {
+	message := cleanupNotificationMessage(outcomes)
+	if message == "" {
+		return
+	}
+	if err := a.deps.send(ctx, "pk", message); err != nil {
+		a.ui.Logger().Warn("Cleanup notification failed", "error", err)
+	}
+}
+
+func cleanupNotificationMessage(outcomes audit.Outcomes) string {
+	p, c := outcomes.Processes, outcomes.Containers
+	processes := cleanupPart(p.Successes, "process", "processes", "Stopped %d leftover %s.")
+	containers := cleanupPart(c.Successes, "container", "containers", "Stopped %d %s.")
+	failed := p.Failures + c.Failures
+	failures := cleanupPart(failed, "cleanup", "cleanups", "%d %s failed.")
+	var parts []string
+	for _, part := range []string{processes, containers, failures} {
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func cleanupPart(count int, singular, plural, format string) string {
+	if count == 0 {
+		return ""
+	}
+	noun := plural
+	if count == 1 {
+		noun = singular
+	}
+	return fmt.Sprintf(format, count, noun)
+}
+
 func (a application) notifyKilled(name string, pid int32) error {
 	msg := fmt.Sprintf("Killed %s (PID %d)", name, pid)
-	return operationError("sending kill notification", a.deps.send("pk", msg))
+	return operationError("sending kill notification", a.deps.send(a.ctx, "pk", msg))
 }
 
 func (a application) exitOnError(err error) {
