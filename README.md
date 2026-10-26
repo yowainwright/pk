@@ -488,7 +488,9 @@ stopped it.
 
 Applied cleanup sends a brief notification about what just happened, such as
 "Stopped 3 leftover processes." Container stops and cleanup failures are included
-when present. The background service sends one notification per cleanup batch.
+when present. The background service sends at most one notification per cleanup
+batch and reports a failed process once while it remains tracked. Retries continue
+and are recorded in history. Restarting the service resets the alert limit.
 Foreground monitor kill alerts identify the process and PID.
 
 Previews, protected targets, and idle checks stay quiet. Delivery follows macOS

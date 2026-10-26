@@ -41,6 +41,7 @@ type Runner struct {
 	startedAt      time.Time
 	readCreateTime func(context.Context, int32) (int64, error)
 	afterCleanup   func(context.Context, audit.Outcomes)
+	failedCleanups map[string]bool
 }
 
 const maxAppliedEventIDs = 2048
@@ -135,6 +136,7 @@ func (r *Runner) finishTick(
 ) error {
 	setDaemonState(&state, os.Getpid(), r.startedAt, r.now())
 	retainAppliedEvents(&state, events)
+	r.retainCleanupFailures(state)
 	if err := r.store.SaveState(state); err != nil {
 		return err
 	}
@@ -153,6 +155,14 @@ func (r *Runner) notifyCleanup(ctx context.Context, counts audit.Counts) {
 	}
 	outcomes := audit.Outcomes{Processes: counts}
 	r.afterCleanup(ctx, outcomes)
+}
+
+func (r *Runner) retainCleanupFailures(state State) {
+	for key := range r.failedCleanups {
+		if _, tracked := state.Processes[key]; !tracked {
+			delete(r.failedCleanups, key)
+		}
+	}
 }
 
 func (r *Runner) loop(ctx context.Context, ticks <-chan time.Time) error {
@@ -669,10 +679,21 @@ func (r *Runner) killManagedProcess(
 	err := r.kill(ctx, proc, reason)
 	if err != nil {
 		state.LastError = err.Error()
-		return state, audit.Counts{Failures: 1}
+		return state, r.recordCleanupFailure(key)
 	}
 	delete(state.Processes, key)
 	return state, audit.Counts{Successes: 1}
+}
+
+func (r *Runner) recordCleanupFailure(key string) audit.Counts {
+	if r.failedCleanups[key] {
+		return audit.Counts{}
+	}
+	if r.failedCleanups == nil {
+		r.failedCleanups = make(map[string]bool)
+	}
+	r.failedCleanups[key] = true
+	return audit.Counts{Failures: 1}
 }
 
 func (r *Runner) skipProtected(proc process.Process, reason string) (bool, error) {
