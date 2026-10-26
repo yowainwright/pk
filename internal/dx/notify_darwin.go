@@ -1,18 +1,31 @@
 package dx
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
-var runCommand = func(name string, args ...string) error {
-	return exec.Command(name, args...).Run()
+const notificationTimeout = 2 * time.Second
+
+func Notify(ctx context.Context, title, message string) error {
+	ctx, cancel := context.WithTimeout(ctx, notificationTimeout)
+	defer cancel()
+	script := notificationScript(title, message)
+	return runCommand(ctx, "osascript", "-e", script)
 }
 
-func Notify(title, message string) error {
-	script := notificationScript(title, message)
-	return runCommand("osascript", "-e", script)
+func runCommand(ctx context.Context, name string, args ...string) error {
+	command := exec.CommandContext(ctx, name, args...)
+	command.WaitDelay = 100 * time.Millisecond
+	err := command.Run()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return errors.Join(ctxErr, err)
+	}
+	return err
 }
 
 func notificationScript(title, message string) string {

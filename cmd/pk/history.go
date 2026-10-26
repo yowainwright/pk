@@ -9,13 +9,25 @@ import (
 
 	"github.com/yowainwright/pk/internal/audit"
 	"github.com/yowainwright/pk/internal/lifecycle"
-	"github.com/yowainwright/pk/internal/widget"
 )
 
 type historyOptions struct {
 	summary bool
 	json    bool
 	since   time.Duration
+}
+
+type historySummary struct {
+	SchemaVersion    int             `json:"schema_version"`
+	GeneratedAt      time.Time       `json:"generated_at"`
+	LastCheckAt      *time.Time      `json:"last_check_at"`
+	ServiceState     string          `json:"service_state"`
+	TrackedProcesses *int            `json:"tracked_processes"`
+	WindowStart      time.Time       `json:"window_start"`
+	WindowEnd        time.Time       `json:"window_end"`
+	Status           string          `json:"status"`
+	Coverage         string          `json:"coverage"`
+	Outcomes         *audit.Outcomes `json:"outcomes"`
 }
 
 type historyUsageError struct{ error }
@@ -98,23 +110,56 @@ func (a application) historyServiceState() (string, error) {
 	return state, operationError("reading service activity", err)
 }
 
-func (a application) loadHistorySnapshot(window time.Duration) (widget.Snapshot, error) {
+func (a application) loadHistorySnapshot(window time.Duration) (historySummary, error) {
 	events, err := a.historyEvents()
 	if err != nil {
-		return widget.UnavailableSnapshot(a.deps.now(), window), err
+		return unavailableHistorySummary(a.deps.now(), window), err
 	}
 	state, err := a.historyLifecycleState()
 	now := a.deps.now()
 	if err != nil {
-		return widget.UnavailableSnapshot(now, window), err
+		return unavailableHistorySummary(now, window), err
 	}
-	snapshot, err := widget.NewSnapshot(events, state.Daemon.LastTickAt, now, window)
+	snapshot, err := newHistorySummary(events, state.Daemon.LastTickAt, now, window)
 	if err != nil {
 		return snapshot, err
 	}
 	tracked := len(state.Processes)
 	snapshot.TrackedProcesses = &tracked
 	return snapshot, nil
+}
+
+func newHistorySummary(
+	events []audit.Event,
+	lastCheck, now time.Time,
+	window time.Duration,
+) (historySummary, error) {
+	summary := unavailableHistorySummary(now, window)
+	if lastCheck.After(now) {
+		return summary, fmt.Errorf("last recorded check is later than report generation")
+	}
+	outcomes := audit.Summarize(events, summary.WindowStart, summary.WindowEnd)
+	summary.Outcomes = &outcomes
+	summary.Status = "ready"
+	if !lastCheck.IsZero() {
+		checked := lastCheck.UTC()
+		summary.LastCheckAt = &checked
+	}
+	return summary, nil
+}
+
+func unavailableHistorySummary(now time.Time, window time.Duration) historySummary {
+	generated := now.UTC()
+	start := generated.Add(-window)
+	return historySummary{
+		SchemaVersion: 1,
+		GeneratedAt:   generated,
+		ServiceState:  "unknown",
+		WindowStart:   start,
+		WindowEnd:     generated,
+		Status:        "unavailable",
+		Coverage:      "retained",
+	}
 }
 
 func (a application) historyEvents() ([]audit.Event, error) {

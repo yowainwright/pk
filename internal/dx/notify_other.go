@@ -2,6 +2,8 @@
 
 package dx
 
-func Notify(title, message string) error {
+import "context"
+
+func Notify(ctx context.Context, title, message string) error {
 	return nil
 }

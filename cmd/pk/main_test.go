@@ -972,6 +972,87 @@ func TestNewMonitorReturnsMonitor(t *testing.T) {
 	}
 }
 
+func TestCleanupNotificationReportsOnlyCurrentAttempt(t *testing.T) {
+	deps := commandDeps(t)
+	deps.scanner.reports = []cleanup.Report{commandReport()}
+	deps.audit.readErr = errors.New("must not read history")
+	deps.backgroundErr = errors.New("must not read service status")
+	deps.lifecycleStoreErr = errors.New("must not read tracking state")
+	args := []string{"cleanup", "--scope", "processes", "--apply"}
+	requireNoError(t, deps.run(args, &bytes.Buffer{}))
+	if deps.notificationMessage != "Stopped 1 leftover process." {
+		t.Fatalf("unexpected notification: %q", deps.notificationMessage)
+	}
+}
+
+func TestCleanupNotificationReportsFailedAttempt(t *testing.T) {
+	deps := commandDeps(t)
+	deps.scanner.reports = []cleanup.Report{commandReport()}
+	deps.killer.err = errors.New("permission denied")
+	args := []string{"cleanup", "--scope", "processes", "--apply"}
+	requireNoError(t, deps.run(args, &bytes.Buffer{}))
+	if deps.notificationMessage != "1 cleanup failed." {
+		t.Fatalf("unexpected notification: %q", deps.notificationMessage)
+	}
+}
+
+func TestCleanupPreviewAndIdleChecksDoNotNotify(t *testing.T) {
+	deps := commandDeps(t)
+	deps.scanner.reports = []cleanup.Report{commandReport()}
+	requireNoError(t, deps.run([]string{"cleanup", "--scope", "processes"}, &bytes.Buffer{}))
+	deps.scanner.reports = nil
+	args := []string{"cleanup", "--scope", "processes", "--apply"}
+	requireNoError(t, deps.run(args, &bytes.Buffer{}))
+	if deps.notificationMessage != "" {
+		t.Fatalf("unexpected notification: %q", deps.notificationMessage)
+	}
+}
+
+func TestNotificationFailureDoesNotFailCleanup(t *testing.T) {
+	deps := commandDeps(t)
+	deps.scanner.reports = []cleanup.Report{commandReport()}
+	deps.dependencies.send = func(context.Context, string, string) error { return errors.New("denied") }
+	args := []string{"cleanup", "--scope", "processes", "--apply"}
+	requireNoError(t, deps.run(args, &bytes.Buffer{}))
+	if !deps.killer.called {
+		t.Fatal("cleanup did not run")
+	}
+}
+
+func TestDaemonNotificationReportsOnlyCurrentCleanup(t *testing.T) {
+	deps, runner := notificationDaemon(t)
+	daemon, ok := runner.(*lifecycle.Runner)
+	if !ok {
+		t.Fatal("expected the real daemon")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	requireNoError(t, daemon.Tick(ctx))
+	if deps.notificationContext != ctx {
+		t.Fatal("notification did not receive the daemon tick context")
+	}
+	if deps.notificationMessage != "Stopped 1 leftover process." {
+		t.Fatalf("unexpected notification: %q", deps.notificationMessage)
+	}
+}
+
+func notificationDaemon(t *testing.T) (*commandTestDeps, commandRunner) {
+	t.Helper()
+	deps := commandDeps(t)
+	deps.dependencies.newDaemon = nil
+	deps.audit.readErr = errors.New("must not read history")
+	proc := process.Process{PID: 42, CreateTime: 100, Name: "node"}
+	lister := fakeCommandLister{procs: []process.Process{proc}}
+	deps.dependencies.newLister = func() process.Lister { return lister }
+	state := &deps.lifecycle.state
+	key := lifecycle.ProcessKey{PID: proc.PID, CreateTime: proc.CreateTime}
+	managed := lifecycle.ManagedProcess{ProcessKey: key, TerminalSessionID: "ended"}
+	id := key.String()
+	state.Processes[id] = managed
+	app := deps.app()
+	return deps, app.newDaemon(&config.Config{}, deps.lifecycle, deps.audit)
+}
+
 func TestNotifyKilledSendsNotification(t *testing.T) {
 	deps := commandDeps(t)
 
@@ -990,7 +1071,7 @@ func TestNotifyKilledSendsNotification(t *testing.T) {
 func TestNotifyKilledReturnsNotificationErrors(t *testing.T) {
 	deps := commandDeps(t)
 	expected := errors.New("notification failed")
-	deps.dependencies.send = func(title string, message string) error {
+	deps.dependencies.send = func(ctx context.Context, title string, message string) error {
 		return expected
 	}
 
@@ -1129,8 +1210,9 @@ func (s *fakeScanner) Scan(ctx context.Context) ([]cleanup.Report, error) {
 }
 
 type fakeAuditStore struct {
-	events []audit.Event
-	err    error
+	events  []audit.Event
+	err     error
+	readErr error
 }
 
 func (s *fakeAuditStore) Record(event audit.Event) error {
@@ -1142,6 +1224,9 @@ func (s *fakeAuditStore) Record(event audit.Event) error {
 }
 
 func (s *fakeAuditStore) Events() ([]audit.Event, error) {
+	if s.readErr != nil {
+		return nil, s.readErr
+	}
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -1151,12 +1236,13 @@ func (s *fakeAuditStore) Events() ([]audit.Event, error) {
 type fakeCommandKiller struct {
 	called bool
 	pid    int32
+	err    error
 }
 
 func (k *fakeCommandKiller) Kill(ctx context.Context, target process.Process) error {
 	k.called = true
 	k.pid = target.PID
-	return nil
+	return k.err
 }
 
 type fakeDockerClient struct {
@@ -1303,6 +1389,7 @@ type commandTestDeps struct {
 	cfg                 *config.Config
 	monitorOptions      monitorOptions
 	readCreateTimePID   int32
+	notificationContext context.Context
 	notificationTitle   string
 	notificationMessage string
 }
@@ -1363,17 +1450,20 @@ func installCommandDeps(t *testing.T, deps *commandTestDeps) {
 		deps.readCreateTimePID = pid
 		return 1234, nil
 	}
-	deps.dependencies.send = func(title string, message string) error {
+	deps.dependencies.send = func(ctx context.Context, title string, message string) error {
+		deps.notificationContext = ctx
 		deps.notificationTitle = title
 		deps.notificationMessage = message
 		return nil
 	}
 }
 
-type fakeCommandLister struct{}
+type fakeCommandLister struct {
+	procs []process.Process
+}
 
 func (l fakeCommandLister) List(ctx context.Context) ([]process.Process, error) {
-	return nil, nil
+	return l.procs, nil
 }
 
 func commandReport() cleanup.Report {

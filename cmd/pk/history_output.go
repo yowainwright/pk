@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/yowainwright/pk/internal/audit"
-	"github.com/yowainwright/pk/internal/widget"
 )
 
 const historyOutcomesFormat = `Successes: %d
@@ -24,7 +23,7 @@ Last recorded daemon check: %s
 Data as of: %s
 `
 
-func writeHistorySnapshot(out io.Writer, snapshot widget.Snapshot, jsonOutput bool) error {
+func writeHistorySnapshot(out io.Writer, snapshot historySummary, jsonOutput bool) error {
 	if jsonOutput {
 		return json.NewEncoder(out).Encode(snapshot)
 	}
@@ -47,7 +46,7 @@ func writeHistoryOutcomes(out io.Writer, outcomes *audit.Outcomes) error {
 	return err
 }
 
-func writeHistoryDates(out io.Writer, snapshot widget.Snapshot) error {
+func writeHistoryDates(out io.Writer, snapshot historySummary) error {
 	tracked := "unavailable"
 	if snapshot.TrackedProcesses != nil {
 		tracked = fmt.Sprint(*snapshot.TrackedProcesses)

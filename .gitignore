@@ -39,8 +39,3 @@ CLAUDE.md
 bin/
 dist/
 .claude
-
-# Xcode generated files and personal settings
-/widget/*.noindex/
-/widget/Widget-*/
-/widget/**/xcuserdata/

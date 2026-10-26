@@ -16,6 +16,60 @@ import (
 	"github.com/yowainwright/pk/internal/process"
 )
 
+func TestTickNotifiesOnceForCurrentCleanupBatch(t *testing.T) {
+	store, runner := notificationRunner()
+	called := 0
+	runner.afterCleanup = func(ctx context.Context, outcomes audit.Outcomes) {
+		called++
+		want := audit.Counts{Successes: 2}
+		if outcomes.Processes != want {
+			t.Fatalf("got cleanup counts %+v, want %+v", outcomes.Processes, want)
+		}
+		if !store.acknowledged {
+			t.Fatal("notification ran before saving cleanup")
+		}
+	}
+	requireNoError(t, runner.Tick(t.Context()))
+	store.procs = nil
+	requireNoError(t, runner.Tick(t.Context()))
+	if called != 1 {
+		t.Fatalf("got %d notifications, want one cleanup batch", called)
+	}
+}
+
+func TestTickReportsCleanupFailures(t *testing.T) {
+	_, runner := notificationRunner()
+	killer := &fakeKiller{err: errors.New("permission denied")}
+	runner.killer = killer
+	var got audit.Outcomes
+	runner.afterCleanup = func(ctx context.Context, outcomes audit.Outcomes) { got = outcomes }
+	requireNoError(t, runner.Tick(t.Context()))
+	want := audit.Counts{Failures: 2}
+	if got.Processes != want {
+		t.Fatalf("got cleanup counts %+v, want %+v", got.Processes, want)
+	}
+}
+
+func TestTickDoesNotNotifyForProtectedProcesses(t *testing.T) {
+	_, runner := notificationRunner()
+	runner.cfg.Protected = append(runner.cfg.Protected, childProcess().Name)
+	runner.afterCleanup = func(context.Context, audit.Outcomes) { t.Fatal("protected processes triggered an alert") }
+	requireNoError(t, runner.Tick(t.Context()))
+}
+
+func notificationRunner() (*fakeStore, *Runner) {
+	store := newFakeStore(sessionStartEvent(), sessionStopEvent())
+	first := managedChild()
+	second := first
+	second.ProcessKey.PID++
+	store.state.Processes[first.ProcessKey.String()] = first
+	store.state.Processes[second.ProcessKey.String()] = second
+	secondProcess := childProcess()
+	secondProcess.PID++
+	store.procs = []process.Process{childProcess(), secondProcess}
+	return store, testRunner(store, nil)
+}
+
 func TestTickReloadsSavedIgnores(t *testing.T) {
 	store := newFakeStore(sessionStartEvent(), sessionStopEvent())
 	killer := &fakeKiller{}
@@ -496,13 +550,14 @@ type fakeKiller struct {
 	called bool
 	pid    int32
 	killed []int32
+	err    error
 }
 
 func (k *fakeKiller) Kill(ctx context.Context, target process.Process) error {
 	k.called = true
 	k.pid = target.PID
 	k.killed = append(k.killed, target.PID)
-	return nil
+	return k.err
 }
 
 func (k *fakeKiller) killedPID(pid int32) bool {
