@@ -26,6 +26,11 @@ type Result struct {
 	Error   string
 }
 
+type processIdentity struct {
+	pid        int32
+	createTime int64
+}
+
 func Run(
 	ctx context.Context,
 	reports []Report,
@@ -35,8 +40,9 @@ func Run(
 ) ([]Result, error) {
 	targets := Targets(reports)
 	results := make([]Result, 0, len(targets))
+	seen := make(map[processIdentity]bool)
 	for _, report := range targets {
-		current, err := runOne(ctx, report, killer, recorder, apply)
+		current, err := runOne(ctx, report, killer, recorder, seen, apply)
 		if err != nil {
 			return nil, err
 		}
@@ -72,11 +78,17 @@ func runOne(
 	report Report,
 	killer Killer,
 	recorder Recorder,
+	seen map[processIdentity]bool,
 	apply bool,
 ) ([]Result, error) {
 	procs := process.KillOrder(report.Process, report.Descendants)
 	results := make([]Result, 0, len(procs))
 	for _, proc := range procs {
+		key := processIdentity{pid: proc.PID, createTime: proc.CreateTime}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		result := runProcess(ctx, report, proc, killer, apply)
 		if err := recordResult(recorder, result); err != nil {
 			return nil, err
