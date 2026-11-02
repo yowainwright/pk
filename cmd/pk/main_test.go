@@ -996,6 +996,23 @@ func TestCleanupNotificationReportsFailedAttempt(t *testing.T) {
 	}
 }
 
+func TestCleanupNotificationCountsOverlappingTargetsOnce(t *testing.T) {
+	deps := commandDeps(t)
+	parent := commandReport()
+	child := parent
+	child.Process.PID++
+	child.Process.ParentPID = parent.Process.PID
+	parent.Descendants = []process.Process{child.Process}
+	deps.scanner.reports = []cleanup.Report{parent, child}
+	args := []string{"cleanup", "--scope", "processes", "--apply"}
+	if err := deps.run(args, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if deps.notificationMessage != "Stopped 2 leftover processes." {
+		t.Fatalf("unexpected notification: %q", deps.notificationMessage)
+	}
+}
+
 func TestCleanupPreviewAndIdleChecksDoNotNotify(t *testing.T) {
 	deps := commandDeps(t)
 	deps.scanner.reports = []cleanup.Report{commandReport()}

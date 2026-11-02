@@ -65,6 +65,63 @@ func TestRunKillsDescendantsBeforeTarget(t *testing.T) {
 	}
 }
 
+func TestRunDeduplicatesOverlappingTargets(t *testing.T) {
+	preview := false
+	apply := true
+	t.Run("preview", func(t *testing.T) { assertOverlappingCleanup(t, preview, nil) })
+	t.Run("apply", func(t *testing.T) { assertOverlappingCleanup(t, apply, nil) })
+	t.Run("failure", func(t *testing.T) {
+		assertOverlappingCleanup(t, apply, errors.New("denied"))
+	})
+}
+
+func assertOverlappingCleanup(t *testing.T, apply bool, killErr error) {
+	t.Helper()
+	killer := &fakeKiller{err: killErr}
+	recorder := &fakeRecorder{}
+	targets := overlappingReports(t)
+	results, err := Run(t.Context(), targets, killer, recorder, apply)
+	assertNoError(t, err)
+	wrongCounts := len(results) != 2 || len(recorder.events) != 2
+	if wrongCounts {
+		t.Fatalf("got %d results and %d events, want two each", len(results), len(recorder.events))
+	}
+	var expected []int32
+	if apply {
+		expected = []int32{43, 42}
+	}
+	assertKilled(t, killer, expected...)
+}
+
+func overlappingReports(t *testing.T) []Report {
+	t.Helper()
+	parent := testProcess(42)
+	parent.Name = "npm"
+	parent.CommandLine = "npm run dev"
+	parent.Cwd = "/workspace/app"
+	child := testProcess(43)
+	child.ParentPID = parent.PID
+	child.CommandLine = "node server.js"
+	child.Cwd = parent.Cwd
+	procs := []process.Process{parent, child}
+	return Reports(testConfig(t), procs)
+}
+
+func TestRunKeepsDistinctProcessIdentities(t *testing.T) {
+	first := testReport(42, ActionKill, ConfidenceHigh)
+	second := first
+	second.Process.CreateTime++
+	targets := []Report{first, second, first}
+	killer := &fakeKiller{}
+	apply := true
+	results, err := Run(t.Context(), targets, killer, nil, apply)
+	assertNoError(t, err)
+	assertKilled(t, killer, 42, 42)
+	if len(results) != 2 {
+		t.Fatalf("expected two process identities, got %d results", len(results))
+	}
+}
+
 func TestRunRecordsKillErrors(t *testing.T) {
 	killer := &fakeKiller{err: errors.New("denied")}
 	recorder := &fakeRecorder{}
