@@ -68,7 +68,7 @@ jobs:
           echo "$(brew --prefix ruby)/bin" >> "$GITHUB_PATH"
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
       - name: Download and verify released binaries
         env:
@@ -117,7 +117,7 @@ jobs:
 
       - name: Open formula pull request
         id: formula-pr
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8.1.3
         with:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
